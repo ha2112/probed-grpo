@@ -1,8 +1,9 @@
 # Afterburner GRPO on three CodeContests orderings
 
-For a new machine, follow [the complete run guide](../RUN_PIPELINE.md). It includes
-the pinned Docker setup, local judge, preflight, full probe, corpus build, required
-GPU smoke step, full runs and checkpoint export.
+For a new machine, follow the
+[complete mentor workflow](../README.md#complete-mentor-workflow). It includes the
+pinned Docker setup, local judge, preflight, full probe, corpus build, required GPU
+smoke step, full runs and checkpoint export.
 
 This experiment holds the model, selected rows, prompt construction, reward,
 validation set, seed, and `verl` settings constant. Only the physical order of

@@ -1,7 +1,8 @@
 # Afterburner coding-difficulty probe
 
-For a fresh GPU machine and the full GRPO workflow, follow
-[RUN_PIPELINE.md](RUN_PIPELINE.md). The commands below also support probe-only use.
+For a fresh GPU machine and the full GRPO workflow, follow the
+[complete mentor workflow](README.md#complete-mentor-workflow). The commands below
+also support probe-only use.
 
 `linear_probe.py` trains a new probe for the cached
 `model-cache/afterburner/Qwen2.5-Coder-3B-Instruct-Venus-Cold-Start`
