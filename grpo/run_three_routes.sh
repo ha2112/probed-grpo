@@ -10,11 +10,9 @@ fi
 
 case "${route}" in
     random|official|probed)
-        "${PYTHON_BIN}" "${SCRIPT_DIR}/codeforces_reward.py" --check
         exec bash "${SCRIPT_DIR}/train.sh" "${route}" "$@"
         ;;
     all)
-        "${PYTHON_BIN}" "${SCRIPT_DIR}/codeforces_reward.py" --check
         for name in random official probed; do
             bash "${SCRIPT_DIR}/train.sh" "${name}" "$@"
         done

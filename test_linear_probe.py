@@ -13,10 +13,19 @@ from sklearn.preprocessing import StandardScaler
 from transformers import AutoTokenizer, Qwen2Config, Qwen2ForCausalLM
 
 import linear_probe as lp
+import artifact_cache as cache
 
 
 class LinearProbeTests(unittest.TestCase):
+    def test_artifact_defaults_stay_in_repository_caches(self):
+        args = lp.parse_args([])
+        self.assertEqual(args.data_cache, lp.ROOT / "data-cache/huggingface/datasets")
+        self.assertEqual(args.output_dir, lp.ROOT / "model-cache/probe")
+        self.assertEqual(Path(args.model), cache.DEFAULT_MODEL_DIR)
+
     def test_backbone_matches_reference_feature(self):
+        if not (lp.DEFAULT_MODEL / "tokenizer.json").is_file():
+            self.skipTest("Run python artifact_cache.py first for the real-tokenizer check")
         tokenizer = AutoTokenizer.from_pretrained(lp.DEFAULT_MODEL, local_files_only=True)
         model = Qwen2ForCausalLM(Qwen2Config(
             vocab_size=len(tokenizer), hidden_size=16, intermediate_size=32,

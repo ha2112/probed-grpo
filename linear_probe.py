@@ -6,10 +6,11 @@ import hashlib
 import json
 from pathlib import Path
 
+from artifact_cache import DEFAULT_MODEL_DIR, ensure_model, load_cached_dataset
+
 import numpy as np
 import pandas as pd
 import torch
-from datasets import load_dataset
 from sklearn.model_selection import train_test_split
 from sklearn.preprocessing import StandardScaler
 from torch import nn
@@ -18,7 +19,9 @@ from transformers import AutoModel, AutoTokenizer
 
 
 ROOT = Path(__file__).resolve().parent
-DEFAULT_MODEL = ROOT / "model-cache/afterburner/Qwen2.5-Coder-3B-Instruct-Venus-Cold-Start"
+DEFAULT_MODEL = DEFAULT_MODEL_DIR
+DEFAULT_DATA_CACHE = ROOT / "data-cache/huggingface/datasets"
+DEFAULT_PROBE_DIR = ROOT / "model-cache/probe"
 SYSTEM_PROMPT = (
     "You are an expert competitive programmer. Solve the following programming "
     "problem in Python, respecting its input/output format and constraints. "
@@ -46,9 +49,12 @@ def resolve_device(device):
 
 
 def load_backbone(model_path, device, dtype):
-    tokenizer = AutoTokenizer.from_pretrained(model_path)
+    model_path = ensure_model(model_path)
+    tokenizer = AutoTokenizer.from_pretrained(model_path, local_files_only=True)
     # AutoModel returns the same final normalized hidden state without LM logits.
-    model = AutoModel.from_pretrained(model_path, torch_dtype=getattr(torch, dtype))
+    model = AutoModel.from_pretrained(
+        model_path, torch_dtype=getattr(torch, dtype), local_files_only=True,
+    )
     model.to(device).eval().requires_grad_(False)
     return tokenizer, model
 
@@ -72,7 +78,7 @@ def embed_problem(description, tokenizer, model, device, max_length):
 
 def load_records(args):
     # The random 64/16/20 partition uses only CodeContests' original train split.
-    dataset = load_dataset(args.data, split="train", cache_dir=str(args.data_cache))
+    dataset = load_cached_dataset(args.data, "train", args.data_cache)
     dataset = dataset.select_columns(["name", "description", "source", "cf_rating"])
     records = [
         {"name": row["name"], "description": row["description"],
@@ -223,6 +229,7 @@ def train(args, device, dtype):
     with torch.inference_mode():
         prediction = probe(torch.from_numpy(features)).numpy()
     report = {"best_epoch": best_epoch, "epochs": args.epochs, "seed": SEED,
+              "max_samples": getattr(args, "max_samples", -1),
               "batch_size": 32, "lr": 5e-4, "weight_decay": 2e-4,
               "normalization_fit": "train_only", "metadata": metadata}
     rows = []
@@ -260,19 +267,19 @@ def predict(args, device):
     print(json.dumps({"pred_difficulty": score, "scale": "Codeforces rating"}))
 
 
-def parse_args():
+def parse_args(argv=None):
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--model", default=str(DEFAULT_MODEL), help="Local checkpoint or Hugging Face model ID")
     parser.add_argument("--data", default="deepmind/code_contests")
-    parser.add_argument("--data-cache", type=Path, default=ROOT / "data-cache/huggingface/datasets")
-    parser.add_argument("--output-dir", type=Path, default=ROOT / "results/linear-probe-afterburner")
+    parser.add_argument("--data-cache", type=Path, default=DEFAULT_DATA_CACHE)
+    parser.add_argument("--output-dir", type=Path, default=DEFAULT_PROBE_DIR)
     parser.add_argument("--device", default="auto", help="auto, cpu, mps, or cuda:0")
     parser.add_argument("--dtype", choices=("float16", "bfloat16", "float32"))
     parser.add_argument("--max-length", type=int, default=4096, help="Fail on longer prompts; never silently truncate")
     parser.add_argument("--max-samples", type=int, default=-1, help="Seeded sample cap; -1 uses all rated problems")
     parser.add_argument("--epochs", type=int, default=80)
     parser.add_argument("--predict-file", type=Path, help="Score a UTF-8 problem statement with a saved probe")
-    args = parser.parse_args()
+    args = parser.parse_args(argv)
     if args.epochs < 1 or args.max_length < 1 or (args.max_samples != -1 and args.max_samples < 10):
         parser.error("epochs/max-length must be positive; max-samples must be -1 or at least 10")
     return args
@@ -285,4 +292,5 @@ if __name__ == "__main__":
     if arguments.predict_file:
         predict(arguments, selected_device)
     else:
+        arguments.model = str(ensure_model(arguments.model))
         train(arguments, selected_device, selected_dtype)

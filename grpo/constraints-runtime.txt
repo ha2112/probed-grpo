@@ -1,0 +1,7 @@
+# Do not let the dependency resolver replace precompiled CUDA components.
+torch==2.6.0
+torchvision==0.21.0
+torchaudio==2.6.0
+vllm==0.8.5.post1
+nvidia-cudnn-cu12==9.8.0.87
+

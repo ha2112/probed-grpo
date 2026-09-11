@@ -1,7 +1,10 @@
-torch>=2.6
-transformers>=4.51
-datasets>=3.5
-numpy>=1.26
-pandas>=2.2
-scikit-learn>=1.5
-requests>=2.26
+# CPU/probe-only installation. Use grpo/Dockerfile for the full GPU pipeline.
+torch==2.6.0
+transformers==4.51.3
+datasets==4.0.0
+huggingface-hub==0.30.2
+numpy==1.26.4
+pandas==2.2.3
+scikit-learn==1.6.1
+requests==2.32.3
+pyarrow==19.0.1

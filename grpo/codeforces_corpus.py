@@ -10,6 +10,11 @@ from pathlib import Path
 
 
 ROOT = Path(__file__).resolve().parents[1]
+if str(ROOT) not in sys.path:
+    sys.path.insert(0, str(ROOT))
+from artifact_cache import (  # noqa: E402
+    DEFAULT_MODEL_DIR, DEFAULT_DATASET_REVISION, ensure_model, load_cached_dataset,
+)
 DATA_SOURCE = "deepmind/code_contests"
 CODEFORCES_SOURCE = 2
 ROUTES = ("random", "official", "probed")
@@ -154,11 +159,12 @@ def make_record(problem, split, probe_score):
         "ability": "code",
         "reward_model": {
             "style": "rule",
-            "ground_truth": {
+            # JSON survives parquet/NumPy collation without nested object arrays.
+            "ground_truth": json.dumps({
                 "baseline_passed": True,
                 "baseline_solution": baseline,
                 "tests": tests,
-            },
+            }, ensure_ascii=False),
         },
         "extra_info": {
             "split": split,
@@ -277,7 +283,27 @@ def _record_hash(record):
     return hashlib.sha256(payload.encode()).hexdigest()
 
 
-def write_corpora(train_problems, validation_problems, scores, output_dir, seed):
+def prepare_problems(problems, tokenizer, max_prompt_length, batch_size=1):
+    """Filter and trim the shared row set before any curriculum ordering."""
+    ids = [problem_id(row) for row in problems]
+    if len(ids) != len(set(ids)):
+        raise ValueError("Duplicate Codeforces problem IDs; cannot create an unambiguous corpus")
+    retained = []
+    for row in problems:
+        prompt = make_record(row, "train", 0.0)["prompt"]
+        tokens = tokenizer.apply_chat_template(prompt, tokenize=True, add_generation_prompt=True)
+        if len(tokens) <= max_prompt_length:
+            retained.append(row)
+    filtered = len(problems) - len(retained)
+    tail = len(retained) % batch_size
+    if tail:
+        retained = retained[:-tail]
+    if not retained:
+        raise ValueError("No complete batch remains after prompt filtering; check sample/batch limits")
+    return retained, {"selected": len(problems), "overlong": filtered, "batch_tail": tail}
+
+
+def write_corpora(train_problems, validation_problems, scores, output_dir, seed, preparation=None):
     from datasets import Dataset
 
     output_dir.mkdir(parents=True, exist_ok=True)
@@ -300,20 +326,26 @@ def write_corpora(train_problems, validation_problems, scores, output_dir, seed)
     shared_dir.mkdir(parents=True, exist_ok=True)
     Dataset.from_list(validation).to_parquet(str(shared_dir / "validation.parquet"))
     manifest = {
-        "schema_version": 1,
+        "schema_version": 2,
         "seed": seed,
         "train_count": len(content_hashes or []),
         "validation_count": len(validation),
         "train_record_hashes": content_hashes or [],
         "route_orders": route_orders,
         "validation_order": [record["extra_info"]["problem_id"] for record in validation],
+        "preparation": preparation or {},
+        "files_sha256": {
+            str(path.relative_to(output_dir)): probe_fingerprint(path)
+            for path in [*(output_dir / route / "train.parquet" for route in ROUTES),
+                         shared_dir / "validation.parquet"]
+        },
     }
     (output_dir / "manifest.json").write_text(
         json.dumps(manifest, indent=2, sort_keys=True) + "\n", encoding="utf-8"
     )
 
 
-def parse_args():
+def parse_args(argv=None):
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--dataset", default=DATA_SOURCE)
     parser.add_argument("--train-split", default="train")
@@ -326,9 +358,13 @@ def parse_args():
     parser.add_argument(
         "--probe",
         type=Path,
-        default=ROOT / "results/linear-probe-afterburner/probe.pt",
+        default=ROOT / "model-cache/probe/probe.pt",
     )
     parser.add_argument("--device", default="auto")
+    parser.add_argument("--model", default=str(DEFAULT_MODEL_DIR), help="Tokenizer used by GRPO")
+    parser.add_argument("--max-prompt-length", type=int, default=2048)
+    parser.add_argument("--train-batch-size", type=int, default=32)
+    parser.add_argument("--allow-smoke-probe", action="store_true", help="Only for the documented pipeline smoke test")
     parser.add_argument("--seed", type=int, default=42)
     parser.add_argument(
         "--output-dir",
@@ -337,31 +373,56 @@ def parse_args():
     )
     parser.add_argument("--max-train", type=int, default=-1)
     parser.add_argument("--max-validation", type=int, default=-1)
-    args = parser.parse_args()
-    if args.max_train == 0 or args.max_validation == 0:
+    args = parser.parse_args(argv)
+    if args.max_train < -1 or args.max_train == 0 or args.max_validation < -1 or args.max_validation == 0:
         parser.error("sample limits must be -1 or positive")
+    if args.max_prompt_length < 1 or args.train_batch_size < 1:
+        parser.error("prompt length and batch size must be positive")
     return args
 
 
 def main():
-    from datasets import load_dataset
+    from transformers import AutoTokenizer
 
     args = parse_args()
     if not args.probe.is_file():
         raise SystemExit(f"Probe checkpoint not found: {args.probe}")
+    if not args.allow_smoke_probe:
+        report_path = args.probe.parent / "metrics.json"
+        if not report_path.is_file():
+            raise SystemExit("Full probe metrics.json is required beside probe.pt")
+        report = json.loads(report_path.read_text())
+        if report.get("max_samples") != -1 or report.get("epochs", 0) < 80:
+            raise SystemExit("Train the full 80-epoch probe first; --allow-smoke-probe is for smoke tests only")
     train = select_codeforces(
-        load_dataset(args.dataset, split=args.train_split, cache_dir=str(args.data_cache)),
+        load_cached_dataset(args.dataset, args.train_split, args.data_cache),
         args.max_train,
     )
     validation = select_codeforces(
-        load_dataset(
-            args.dataset,
-            split=args.validation_split,
-            cache_dir=str(args.data_cache),
-        ),
+        load_cached_dataset(args.dataset, args.validation_split, args.data_cache),
         args.max_validation,
     )
-    fingerprint = probe_fingerprint(args.probe)
+    model_path = ensure_model(args.model)
+    tokenizer = AutoTokenizer.from_pretrained(model_path, local_files_only=True)
+    train, train_filter = prepare_problems(train, tokenizer, args.max_prompt_length, args.train_batch_size)
+    validation, validation_filter = prepare_problems(validation, tokenizer, args.max_prompt_length)
+    preparation = {
+        "dataset": args.dataset,
+        "dataset_revision": DEFAULT_DATASET_REVISION if args.dataset == DATA_SOURCE else None,
+        "train_split": args.train_split, "validation_split": args.validation_split,
+        "model": str(model_path), "max_prompt_length": args.max_prompt_length,
+        "train_batch_size": args.train_batch_size,
+        "max_train": args.max_train, "max_validation": args.max_validation,
+        "train_filter": train_filter, "validation_filter": validation_filter,
+        "probe_sha256": probe_fingerprint(args.probe),
+        "smoke": args.allow_smoke_probe,
+    }
+    print(json.dumps(preparation, indent=2), flush=True)
+    # Changed statements or preparation settings must invalidate old scores.
+    fingerprint = hashlib.sha256(json.dumps({
+        "preparation": preparation,
+        "statements": [[problem_id(row), row["description"]] for row in train + validation],
+    }, sort_keys=True).encode()).hexdigest()
     cache_path = args.output_dir / "probe_scores.jsonl"
     initialize_score_cache(cache_path, fingerprint)
     scores = load_score_cache(cache_path, fingerprint)
@@ -375,7 +436,7 @@ def main():
         scorer_factory,
         scorer,
     )
-    write_corpora(train, validation, scores, args.output_dir, args.seed)
+    write_corpora(train, validation, scores, args.output_dir, args.seed, preparation)
 
 
 if __name__ == "__main__":

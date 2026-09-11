@@ -1,4 +1,7 @@
 import copy
+import json
+import shlex
+import subprocess
 import sys
 import tempfile
 import unittest
@@ -66,7 +69,7 @@ class CorpusRouteTests(unittest.TestCase):
                 serialized = repr(record)
                 self.assertNotIn(f"'{route}'", serialized)
                 self.assertIn("<thinking>", record["prompt"][0]["content"])
-                self.assertTrue(record["reward_model"]["ground_truth"]["baseline_passed"])
+                self.assertTrue(json.loads(record["reward_model"]["ground_truth"])["baseline_passed"])
 
     def test_selection_is_identical_before_ordering(self):
         invalid = copy.deepcopy(self.problems[0])
@@ -121,10 +124,17 @@ class RewardTests(unittest.TestCase):
 
 
 class LauncherTests(unittest.TestCase):
-    def test_one_launcher_contains_all_shared_afterburner_settings(self):
+    def test_probe_and_model_use_repository_model_cache(self):
+        args = corpus.parse_args([])
+        self.assertEqual(args.probe, corpus.ROOT / "model-cache/probe/probe.pt")
         launcher = (GRPO_DIR / "train.sh").read_text(encoding="utf-8")
-        for route in corpus.ROUTES:
-            self.assertIn(route, launcher)
+        self.assertIn('"${ROOT_DIR}/artifact_cache.py" "${MODEL_PATH}"', launcher)
+
+    def test_one_launcher_contains_all_shared_afterburner_settings(self):
+        launcher = subprocess.check_output(
+            ["bash", str(GRPO_DIR / "train.sh"), "--dry-run", "random"], text=True,
+        )
+        arguments = shlex.split(launcher)
         for setting in (
             "data.shuffle=False",
             "data.train_batch_size=32",
@@ -135,7 +145,7 @@ class LauncherTests(unittest.TestCase):
             "reward_model.reward_manager=batch",
             "trainer.total_epochs=200",
         ):
-            self.assertIn(setting, launcher)
+            self.assertIn(setting, arguments)
         self.assertEqual(launcher.count("verl.trainer.main_ppo"), 1)
 
 

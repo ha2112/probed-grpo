@@ -1,10 +1,16 @@
 # Afterburner coding-difficulty probe
 
+For a fresh GPU machine and the full GRPO workflow, follow
+[RUN_PIPELINE.md](RUN_PIPELINE.md). The commands below also support probe-only use.
+
 `linear_probe.py` trains a new probe for the cached
 `model-cache/afterburner/Qwen2.5-Coder-3B-Instruct-Venus-Cold-Start`
 checkpoint. This is the cold-start model, not the final GRPO checkpoint. Its
 configuration specifies a hidden size of 2,048; the script derives the probe
-width from its extracted features.
+width from its extracted features. If the checkpoint is missing, the script
+downloads `Elfsong/Qwen2.5-Coder-3B-Instruct-Venus-Cold-Start` into that exact
+directory before loading it.
+Default model and dataset downloads use fixed Hub revisions from `artifact_cache.py`.
 
 ## Run
 
@@ -23,13 +29,17 @@ CPU. Only the small linear probe trains, on CPU. To select a GPU explicitly:
 python linear_probe.py --device cuda:0
 ```
 
+Before starting full extraction, `python grpo/preflight.py --stage probe` checks
+that all eligible input statements fit the model's token limit. This needs only
+the tokenizer/config and CPU, though it ensures the complete snapshot is available.
+
 The dataset cache defaults to `data-cache/huggingface/datasets`. To use the
 existing cache without contacting Hugging Face, set `HF_HUB_OFFLINE=1`.
 An end-to-end smoke run uses a separate output directory:
 
 ```bash
 HF_HUB_OFFLINE=1 python linear_probe.py --max-samples 10 --epochs 2 \
-  --output-dir results/linear-probe-afterburner-smoke
+  --output-dir model-cache/probe/smoke
 ```
 
 The smoke run verifies execution only; ten examples and two epochs are
@@ -93,7 +103,7 @@ instead of hardcoding the base Qwen model's ChatML role markers.
 
 ## Outputs and resuming
 
-The default output directory is `results/linear-probe-afterburner`:
+The default output directory is `model-cache/probe`:
 
 - `embeddings.npz`: float32 raw features and cache metadata; saves every 25 rows
   and on completion. A rerun resumes the saved prefix.
@@ -117,7 +127,7 @@ silently truncated, and failed extractions do not silently remove examples.
 Run focused checks with:
 
 ```bash
-HF_HUB_OFFLINE=1 python -m unittest -v test_linear_probe.py
+HF_HUB_OFFLINE=1 python -m unittest -v test_artifact_cache.py test_linear_probe.py
 ```
 
 These checks exercise actual Qwen2 feature equivalence, the coding chat template,
@@ -125,8 +135,8 @@ overflow rejection, scaler folding, split isolation, partial-cache recovery,
 cache mismatch rejection, and safe checkpoint reload. They require the cached
 tokenizer, but not the full checkpoint weights or a GPU.
 
-Verified locally on 2026-09-11: all five tests passed, and a CPU/float32 run on
+Verified locally on 2026-09-11: all cache and probe tests passed, and a CPU/float32 run on
 the real cold-start checkpoint completed ten Codeforces problems and two probe
-epochs. Its artifacts are in `results/linear-probe-afterburner-smoke`. The full
+epochs. Its artifacts are in `model-cache/probe/smoke`. The full
 6,673-problem, 80-epoch experiment has not been run. The saved probe also reloaded
 successfully through `--predict-file` and scored a new problem with the real model.
