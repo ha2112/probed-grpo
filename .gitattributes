@@ -1,0 +1,12 @@
+* text=auto eol=lf
+
+*.sh text eol=lf
+
+# Keep generated research artifacts out of textual diffs if explicitly added.
+*.bin binary
+*.npz binary
+*.parquet binary
+*.png binary
+*.pt binary
+*.pth binary
+*.safetensors binary
