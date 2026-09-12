@@ -11,12 +11,54 @@ connected workflows:
 **Mentor handoff:** the complete fresh-machine workflow is included directly in
 this README under [Complete mentor workflow](#complete-mentor-workflow).
 
+## Run automatically after setup
+
+Complete the host, Docker image, judge, and container setup in steps 1–4 below.
+Keep the judge running in its host terminal. Inside the training container, set
+the GPU count and any experiment settings once, then start:
+
+```bash
+source grpo/env.sh
+# Example for a two-GPU host; choose the values for your machine.
+export N_GPUS=2 TENSOR_PARALLEL_SIZE=2
+bash grpo/run_pipeline.sh
+```
+
+This command downloads the inputs, runs preflight and tests (including pinned
+verl integration), trains the full probe, builds and checks all three corpora,
+performs the mandatory one-step GPU smoke test, trains all three routes, and
+exports their final checkpoints to Hugging Face directories. Steps 5–10 below
+describe what it performs automatically; no additional prompts are required.
+Use a persistent SSH/tmux session for both the judge and the training command.
+
+Outputs are under `results/pipeline/`: `probe/`, `corpora/`, `checkpoints/`, `configs/`,
+`exports/{random,official,probed}/`, per-stage `logs/`, and `progress.json`.
+The environment freeze is in `logs/environment.log`. Model and dataset downloads
+continue to use the shared repository caches. Runtime and judge checks run on
+every invocation. Failures stop downstream work and preserve progress; after
+fixing the cause, rerun the exact same command. Completed stages are skipped only
+after checking their required outputs. Corpus checksums are rechecked. Partial
+probe extraction, corpus scoring, and training use the existing resume mechanisms.
+An interrupted one-step smoke test restarts from the cold-start model.
+
+The runner locks the experiment directory and records its source/settings
+signature. Changed code or settings require a new directory, for example
+`bash grpo/run_pipeline.sh --run-dir results/experiment-2`. Keep the container
+mount fixed across restarts. The runner uses the default pinned model and owns
+its artifact paths; unset `AFTERBURNER_MODEL_PATH`, `AFTERBURNER_CHECKPOINT_DIR`,
+and `CODECONTESTS_GRPO_DATA_DIR` when using it. Do not edit or delete outputs or
+`progress.json` during an experiment. A missing completed output stops the run.
+
+Automation does not change the validation limits below: the real Docker/GPU
+execution must still pass on the target machine before full training proceeds.
+
 ## Repository layout
 
 | Path | Purpose |
 | --- | --- |
 | `linear_probe.py` | Train or apply the coding-difficulty probe. |
 | `artifact_cache.py` | Pinned model/dataset downloads and repository-local caches. |
+| `grpo/run_pipeline.sh`, `grpo/pipeline.py` | Automatic full run, progress tracking, resumption, and export. |
 | `RUN_PIPELINE.md` | Compatibility pointer to the workflow in this README. |
 | `grpo/Dockerfile`, `grpo/requirements-overlay.lock` | Pinned GPU runtime and Python dependencies. |
 | `grpo/preflight.py`, `grpo/judge_server.py` | Runtime/corpus checks and optional Docker-isolated judge. |

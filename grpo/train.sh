@@ -96,5 +96,5 @@ if [[ "${config_only}" == true ]]; then
     exec "${PYTHON_BIN}" "${SCRIPT_DIR}/preflight.py" --stage config -- "${overrides[@]}"
 fi
 "${PYTHON_BIN}" "${SCRIPT_DIR}/preflight.py" --stage training \
-    --record "${ROOT_DIR}/results/launch-${route}.yaml" -- "${overrides[@]}"
+    --record "${GRPO_LAUNCH_DIR:-${ROOT_DIR}/results}/launch-${route}.yaml" -- "${overrides[@]}"
 exec "${PYTHON_BIN}" -m verl.trainer.main_ppo "${overrides[@]}"
