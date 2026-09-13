@@ -1,5 +1,8 @@
 # Afterburner coding-difficulty probe
 
+For **5 ordered difficulty groups** (stronger curriculum objective than exact
+rating regression), follow [GROUP_PROBE.md](GROUP_PROBE.md) after embeddings exist.
+
 For a fresh GPU machine and the full GRPO workflow, follow the
 [complete mentor workflow](README.md#complete-mentor-workflow). The commands below
 also support probe-only use.
