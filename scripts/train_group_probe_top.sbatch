@@ -5,13 +5,13 @@
 #SBATCH --gpus=2
 #SBATCH --cpus-per-task=16
 #SBATCH --mem=128G
-#SBATCH --time=24:00:00
+#SBATCH --time=7-00:00:00
 #SBATCH --output=/home/cuongvd6/sc/probed-grpo/results/logs/group-top-%j.out
 #SBATCH --error=/home/cuongvd6/sc/probed-grpo/results/logs/group-top-%j.err
 
 set -euo pipefail
 cd /home/cuongvd6/sc/probed-grpo
-mkdir -p results/logs model-cache/group-probe-top
+mkdir -p results/logs results/group-probe-top model-cache/group-probe-top
 
 source /home/cuongvd6/miniconda3/etc/profile.d/conda.sh
 conda activate probed-probe
@@ -23,23 +23,28 @@ export OMP_NUM_THREADS=4
 echo "job=${SLURM_JOB_ID} host=$(hostname) start=$(date --iso-8601=seconds)"
 echo "python=$(which python)"
 python -c "import peft, torch; print('peft', peft.__version__, 'torch', torch.__version__, 'gpus', torch.cuda.device_count())"
+python -c "import matplotlib; print('matplotlib', matplotlib.__version__)"
 nvidia-smi --query-gpu=index,name,memory.total --format=csv
 python -m unittest -v test_group_probe_top.py
 
-# Per-GPU batch 8 x 2 GPUs x accumulation 2 = effective batch 32.
+# 1000 epochs, no early stop, checkpoint every 200 epochs.
+# Live plots: results/group-probe-top/metrics_live.png (+ history.csv).
+# Effective batch = 16 * 2 GPUs * 2 accum = 64.
 python -m torch.distributed.run \
   --standalone \
   --nproc_per_node=2 \
   group_probe_top.py \
-  --epochs 10 \
-  --patience 3 \
-  --batch-size 8 \
-  --eval-batch-size 4 \
+  --epochs 1000 \
+  --patience 0 \
+  --save-every 200 \
+  --batch-size 16 \
+  --eval-batch-size 8 \
   --grad-accum 2 \
   --lr 3e-5 \
   --lora-r 32 \
   --lora-alpha 64 \
   --last-n-layers 16 \
-  --output-dir model-cache/group-probe-top
+  --output-dir model-cache/group-probe-top \
+  --plot-dir results/group-probe-top
 
 echo "done=$(date --iso-8601=seconds)"

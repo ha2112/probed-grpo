@@ -453,6 +453,62 @@ def make_loader(dataset, batch_size, sampler=None, shuffle=False, workers=0):
     )
 
 
+def write_history_and_plots(history, plot_dir: Path) -> None:
+    """Persist train/eval curves after every epoch for live monitoring."""
+    plot_dir = Path(plot_dir)
+    plot_dir.mkdir(parents=True, exist_ok=True)
+    frame = pd.DataFrame(history)
+    frame.to_csv(plot_dir / "history.csv", index=False)
+    (plot_dir / "history.json").write_text(
+        json.dumps(history, indent=2) + "\n"
+    )
+    if frame.empty:
+        return
+    import matplotlib
+
+    matplotlib.use("Agg")
+    import matplotlib.pyplot as plt
+
+    epochs = frame["epoch"].to_numpy()
+    figure, axes = plt.subplots(1, 2, figsize=(12, 4.5), constrained_layout=True)
+
+    train_axes = axes[0]
+    train_axes.plot(epochs, frame["train_loss"], label="loss", linewidth=2)
+    for key, style in (
+        ("train_ce", "-"),
+        ("train_emd", "--"),
+        ("train_coral", "-."),
+        ("train_regression", ":"),
+        ("train_ranking", "--"),
+    ):
+        if key in frame.columns:
+            train_axes.plot(epochs, frame[key], style, label=key.replace("train_", ""), alpha=0.85)
+    train_axes.set_title("Train losses")
+    train_axes.set_xlabel("epoch")
+    train_axes.set_ylabel("loss")
+    train_axes.grid(True, alpha=0.3)
+    train_axes.legend(fontsize=8)
+
+    eval_axes = axes[1]
+    eval_axes.plot(epochs, frame["val_accuracy"], label="exact acc", linewidth=2)
+    eval_axes.plot(epochs, frame["val_qwk"], label="QWK")
+    eval_axes.plot(epochs, frame["val_adjacent_accuracy"], label="adjacent")
+    if "selection" in frame.columns:
+        eval_axes.plot(epochs, frame["selection"], label="selection", linestyle="--")
+    eval_axes.set_title("Eval metrics (selection half)")
+    eval_axes.set_xlabel("epoch")
+    eval_axes.set_ylabel("score")
+    eval_axes.set_ylim(0.0, 1.05)
+    eval_axes.grid(True, alpha=0.3)
+    eval_axes.legend(fontsize=8)
+
+    temporary = plot_dir / "_metrics_live_write.png"
+    final = plot_dir / "metrics_live.png"
+    figure.savefig(temporary, dpi=140, format="png")
+    plt.close(figure)
+    temporary.replace(final)
+
+
 def save_checkpoint(args, model, edges, rating_mean, rating_std, layers, directory, calibration=None):
     directory = Path(directory)
     directory.mkdir(parents=True, exist_ok=True)
@@ -598,6 +654,10 @@ def train(args):
     best = {"score": -math.inf, "epoch": 0}
     patience_left = args.patience
     history = []
+    plot_dir = Path(args.plot_dir)
+    if rank == 0:
+        plot_dir.mkdir(parents=True, exist_ok=True)
+        (args.output_dir / "checkpoints").mkdir(parents=True, exist_ok=True)
 
     for epoch in range(1, args.epochs + 1):
         if sampler is not None:
@@ -683,16 +743,24 @@ def train(args):
             row = {
                 "epoch": epoch,
                 "train_loss": totals["loss"] / seen,
+                "train_ce": totals["ce"] / seen,
+                "train_emd": totals["emd"] / seen,
+                "train_coral": totals["coral"] / seen,
+                "train_regression": totals["regression"] / seen,
+                "train_ranking": totals["ranking"] / seen,
                 "val_accuracy": report["accuracy"],
                 "val_qwk": report["qwk"],
                 "val_adjacent_accuracy": report["adjacent_accuracy"],
                 "selection": selection,
             }
             history.append(row)
+            write_history_and_plots(history, plot_dir)
             print(json.dumps({"validation": row}, indent=2), flush=True)
+            print(f"Updated live plots: {plot_dir / 'metrics_live.png'}", flush=True)
             if selection > best["score"] + 1e-6:
                 best = {"score": selection, "epoch": epoch}
-                patience_left = args.patience
+                if args.patience > 0:
+                    patience_left = args.patience
                 save_checkpoint(
                     args,
                     unwrap(model),
@@ -704,11 +772,24 @@ def train(args):
                     calibration,
                 )
                 print(f"New best exact-focused checkpoint: epoch {epoch}", flush=True)
-            else:
+            elif args.patience > 0:
                 patience_left -= 1
                 stop = patience_left <= 0
                 if stop:
                     print(f"Early stop at {epoch}; best={best['epoch']}", flush=True)
+            if args.save_every > 0 and epoch % args.save_every == 0:
+                periodic = args.output_dir / "checkpoints" / f"epoch-{epoch:04d}"
+                save_checkpoint(
+                    args,
+                    unwrap(model),
+                    edges,
+                    rating_mean,
+                    rating_std,
+                    layers,
+                    periodic,
+                    calibration,
+                )
+                print(f"Saved periodic checkpoint: {periodic}", flush=True)
         if distributed:
             flag = torch.tensor([int(stop)], device=device)
             dist.broadcast(flag, 0)
@@ -868,7 +949,12 @@ def parse_args(argv=None):
     parser.add_argument("--device", default="cuda:0")
     parser.add_argument("--dtype", choices=("bfloat16", "float16"), default="bfloat16")
     parser.add_argument("--epochs", type=int, default=10)
-    parser.add_argument("--patience", type=int, default=3)
+    parser.add_argument(
+        "--patience",
+        type=int,
+        default=3,
+        help="Early-stop patience on selection metric; 0 disables early stopping",
+    )
     parser.add_argument("--batch-size", type=int, default=8, help="Per GPU")
     parser.add_argument("--eval-batch-size", type=int, default=4)
     parser.add_argument("--grad-accum", type=int, default=2)
@@ -888,10 +974,26 @@ def parse_args(argv=None):
     parser.add_argument("--regression-weight", type=float, default=0.30)
     parser.add_argument("--ranking-weight", type=float, default=0.30)
     parser.add_argument("--log-every", type=int, default=20)
+    parser.add_argument(
+        "--save-every",
+        type=int,
+        default=0,
+        help="Save a periodic checkpoint every N epochs (0 disables)",
+    )
+    parser.add_argument(
+        "--plot-dir",
+        type=Path,
+        default=lp.ROOT / "results/group-probe-top",
+        help="Directory for live history.csv and metrics_live.png",
+    )
     parser.add_argument("--predict-file", type=Path)
     args = parser.parse_args(argv)
-    if min(args.epochs, args.patience, args.batch_size, args.grad_accum) < 1:
-        parser.error("epochs/patience/batch-size/grad-accum must be positive")
+    if min(args.epochs, args.batch_size, args.grad_accum) < 1:
+        parser.error("epochs/batch-size/grad-accum must be positive")
+    if args.patience < 0:
+        parser.error("patience must be >= 0 (0 disables early stopping)")
+    if args.save_every < 0:
+        parser.error("save-every must be >= 0")
     return args
 
 
