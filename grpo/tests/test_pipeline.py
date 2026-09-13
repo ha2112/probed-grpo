@@ -39,6 +39,12 @@ class SimulatedPipeline(Pipeline):
 
     def execute(self, name, command, env=None):
         self.calls.append(name)
+        if name in ("venus-inputs", "corpora"):
+            assert command[1] == "grpo/venus_corpus.py"
+        if name == "judge":
+            assert command[1] == "grpo/venus_reward.py"
+        if name == "probe":
+            assert command[1] == "linear_probe.py"
         if name == self.fail:
             raise subprocess.CalledProcessError(7, command)
         if name == self.omit:
@@ -73,14 +79,14 @@ class PipelineTests(unittest.TestCase):
             pipeline = SimulatedPipeline(path)
             pipeline.run()
             self.assertEqual(pipeline.calls, [
-                "runtime", "judge", "download", "environment", "probe-inputs", "probe-tests",
+                "runtime", "judge", "download", "venus-inputs", "environment", "probe-inputs", "probe-tests",
                 "grpo-tests", "probe", "corpora", "corpus-check", "config", "smoke",
                 "train-random", "export-random", "train-official", "export-official",
                 "train-probed", "export-probed",
             ])
             resumed = SimulatedPipeline(path)
             resumed.run()
-            self.assertEqual(resumed.calls, ["runtime", "judge", "download", "environment",
+            self.assertEqual(resumed.calls, ["runtime", "judge", "download", "venus-inputs", "environment",
                                              "corpus-check", "config"])
             state = json.loads((path / "progress.json").read_text())
             self.assertNotIn("active", state)

@@ -15,16 +15,20 @@ if [[ "${route}" != random && "${route}" != official && "${route}" != probed ]];
 fi
 shift
 
-DATA_DIR="${CODECONTESTS_GRPO_DATA_DIR:-${SCRIPT_DIR}/data}"
+if [[ -n "${CODECONTESTS_GRPO_DATA_DIR:-}" ]]; then
+    echo "CODECONTESTS_GRPO_DATA_DIR is obsolete; unset it and use VENUS_GRPO_DATA_DIR for prepared Venus corpora." >&2
+    exit 2
+fi
+DATA_DIR="${VENUS_GRPO_DATA_DIR:-${SCRIPT_DIR}/data/venus}"
 MODEL_PATH="${AFTERBURNER_MODEL_PATH:-${ROOT_DIR}/model-cache/afterburner/Qwen2.5-Coder-3B-Instruct-Venus-Cold-Start}"
-CHECKPOINT_DIR="${AFTERBURNER_CHECKPOINT_DIR:-${SCRIPT_DIR}/checkpoints}"
+CHECKPOINT_DIR="${AFTERBURNER_CHECKPOINT_DIR:-${SCRIPT_DIR}/checkpoints/venus}"
 PYTHON_BIN="${PYTHON_BIN:-python3}"
 EXPERIMENT_SEED="${EXPERIMENT_SEED:-42}"
 train_file="${DATA_DIR}/${route}/train.parquet"
 validation_file="${DATA_DIR}/shared/validation.parquet"
 
 if [[ "${dry_run}" == false && "${config_only}" == false ]] && [[ ! -f "${train_file}" || ! -f "${validation_file}" ]]; then
-    echo "Missing prepared corpus under ${DATA_DIR}; run codeforces_corpus.py first." >&2
+    echo "Missing prepared Venus corpus under ${DATA_DIR}; run venus_corpus.py first." >&2
     exit 1
 fi
 
@@ -45,8 +49,8 @@ overrides=( \
     data.max_response_length="${MAX_RESPONSE_LENGTH}" \
     data.filter_overlong_prompts=False \
     data.truncation=error \
-    "custom_reward_function.path='${SCRIPT_DIR}/codeforces_reward.py'" \
-    custom_reward_function.name=codeforces_reward_fn_batch \
+    "custom_reward_function.path='${SCRIPT_DIR}/venus_reward.py'" \
+    custom_reward_function.name=venus_reward_fn_batch \
     reward_model.reward_manager=batch \
     "actor_rollout_ref.model.path='${MODEL_PATH}'" \
     actor_rollout_ref.actor.optim.lr=1e-6 \
@@ -76,8 +80,8 @@ overrides=( \
     trainer.critic_warmup=0 \
     trainer.logger='[console]' \
     trainer.balance_batch=False \
-    trainer.project_name=verl_grpo_afterburner_codecontests \
-    trainer.experiment_name="codecontests-${route}-seed-${EXPERIMENT_SEED}" \
+    trainer.project_name=verl_grpo_afterburner_venus \
+    trainer.experiment_name="venus-${route}-seed-${EXPERIMENT_SEED}" \
     "trainer.default_local_dir='${CHECKPOINT_DIR}/${route}-seed-${EXPERIMENT_SEED}'" \
     trainer.val_before_train=False \
     trainer.n_gpus_per_node="${N_GPUS}" \

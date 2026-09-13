@@ -55,7 +55,7 @@ class Pipeline:
         self.probe = directory / "probe"
         self.corpus = directory / "corpora"
         self.checkpoints = directory / "checkpoints"
-        self.env["CODECONTESTS_GRPO_DATA_DIR"] = str(self.corpus)
+        self.env["VENUS_GRPO_DATA_DIR"] = str(self.corpus)
         self.env["AFTERBURNER_CHECKPOINT_DIR"] = str(self.checkpoints)
         self.env["GRPO_LAUNCH_DIR"] = str(directory / "configs")
         self.state_path = directory / "progress.json"
@@ -161,8 +161,9 @@ class Pipeline:
         py = self.python
         # Repeat live health checks on every invocation, including resumption.
         self.execute("runtime", [py, "grpo/preflight.py", "--stage", "runtime"])
-        self.execute("judge", [py, "grpo/codeforces_reward.py", "--check"])
+        self.execute("judge", [py, "grpo/venus_reward.py", "--check"])
         self.execute("download", [py, "artifact_cache.py"])
+        self.execute("venus-inputs", [py, "grpo/venus_corpus.py", "--download-only"])
         self.execute("environment", [py, "-m", "pip", "freeze"])
         self.stage("probe-inputs", [py, "grpo/preflight.py", "--stage", "probe"], lambda: None)
         self.stage("probe-tests", [py, "-m", "unittest", "-v",
@@ -179,7 +180,7 @@ class Pipeline:
         corpus_outputs += [self.corpus / "shared/validation.parquet",
                            self.corpus / "manifest.json", self.corpus / "probe_scores.jsonl"]
         self.stage("corpora", [
-            py, "grpo/codeforces_corpus.py", "--device", "cuda:0", "--probe", str(self.probe / "probe.pt"),
+            py, "grpo/venus_corpus.py", "--device", "cuda:0", "--probe", str(self.probe / "probe.pt"),
             "--output-dir", str(self.corpus), "--train-batch-size", self.env["TRAIN_BATCH_SIZE"],
             "--max-prompt-length", self.env["MAX_PROMPT_LENGTH"], "--seed", self.env["EXPERIMENT_SEED"],
         ], lambda: require_files(corpus_outputs))
@@ -192,7 +193,7 @@ class Pipeline:
         self.stage("smoke", [
             "bash", "grpo/train.sh", "random", "trainer.total_training_steps=1",
             "trainer.save_freq=1", "trainer.test_freq=-1", "trainer.resume_mode=disable",
-            "trainer.experiment_name=codecontests-smoke",
+            "trainer.experiment_name=venus-smoke",
         ], lambda: self.checkpoint("random", smoke=True), smoke_env)
         for route in ROUTES:
             self.stage(f"train-{route}", ["bash", "grpo/train.sh", route],
@@ -213,7 +214,8 @@ def main():
     missing = [key for key in SETTINGS if key != "EXPERIMENT_SEED" and not os.environ.get(key)]
     if missing:
         parser.error("Use bash grpo/run_pipeline.sh so grpo/env.sh supplies the settings")
-    for key in ("AFTERBURNER_MODEL_PATH", "AFTERBURNER_CHECKPOINT_DIR", "CODECONTESTS_GRPO_DATA_DIR"):
+    for key in ("AFTERBURNER_MODEL_PATH", "AFTERBURNER_CHECKPOINT_DIR", "VENUS_GRPO_DATA_DIR",
+                "CODECONTESTS_GRPO_DATA_DIR"):
         if os.environ.get(key):
             parser.error(f"{key} is not supported by this runner; outputs are controlled by --run-dir")
     # Treat a normal termination request like Ctrl-C so child cleanup still runs.

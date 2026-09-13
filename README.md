@@ -4,9 +4,17 @@ This repository studies whether a learned estimate of Codeforces problem
 difficulty can improve curriculum ordering for GRPO training. It contains two
 connected workflows:
 
-1. Train a linear difficulty probe on frozen Afterburner representations.
-2. Build equivalent CodeContests corpora in random, official-rating, and
-   probe-predicted order, then train one GRPO route at a time.
+1. Train a linear difficulty probe on Codeforces statements from CodeContests,
+   using frozen Afterburner representations.
+2. Apply that probe to Venus statements, build equivalent Venus corpora in
+   random, official-difficulty, and probe-predicted order, then train GRPO.
+
+Codeforces is only the probe-training dataset. GRPO uses the paper's
+[`Elfsong/Venus_Python`](https://huggingface.co/datasets/Elfsong/Venus_Python)
+dataset, pinned to revision `84f037f8c257af049d4dd29ed144bb489c409a91`.
+The Hub currently redirects that name to `Elfsong/Venus_General_Test`; the pinned
+snapshot contains 984 `train` and 300 `test` problems. Missing Venus artifacts are
+downloaded automatically into `data-cache/huggingface/`.
 
 **Mentor handoff:** the complete fresh-machine workflow is included directly in
 this README under [Complete mentor workflow](#complete-mentor-workflow).
@@ -46,7 +54,8 @@ signature. Changed code or settings require a new directory, for example
 `bash grpo/run_pipeline.sh --run-dir results/experiment-2`. Keep the container
 mount fixed across restarts. The runner uses the default pinned model and owns
 its artifact paths; unset `AFTERBURNER_MODEL_PATH`, `AFTERBURNER_CHECKPOINT_DIR`,
-and `CODECONTESTS_GRPO_DATA_DIR` when using it. Do not edit or delete outputs or
+and `VENUS_GRPO_DATA_DIR` when using it. Also unset the obsolete
+`CODECONTESTS_GRPO_DATA_DIR`. Do not edit or delete outputs or
 `progress.json` during an experiment. A missing completed output stops the run.
 
 Automation does not change the validation limits below: the real Docker/GPU
@@ -61,13 +70,13 @@ execution must still pass on the target machine before full training proceeds.
 | `grpo/run_pipeline.sh`, `grpo/pipeline.py` | Automatic full run, progress tracking, resumption, and export. |
 | `RUN_PIPELINE.md` | Compatibility pointer to the workflow in this README. |
 | `grpo/Dockerfile`, `grpo/requirements-overlay.lock` | Pinned GPU runtime and Python dependencies. |
-| `grpo/preflight.py`, `grpo/judge_server.py` | Runtime/corpus checks and optional Docker-isolated judge. |
+| `grpo/preflight.py` | Runtime, Venus corpus, reward and judge checks. |
+| `grpo/venus_corpus.py`, `grpo/venus_reward.py` | Venus data preparation and Afterburner efficiency reward. |
 | `test_linear_probe.py` | Focused probe tests. |
 | `grpo/` | Corpus construction, reward logic, tests, and training launchers. |
 | `LINEAR_PROBE.md` | Probe setup, methodology, outputs, and reproduction notes. |
 | `grpo/README.md` | Three-route GRPO workflow. |
-| `GRPO_METHODOLOGY_REPORT.md` | Full experimental methodology. |
-| `GRPO_METHODOLOGY_VERIFICATION.md` | Verification record and evidence. |
+| `GRPO_METHODOLOGY_REPORT.md`, `GRPO_METHODOLOGY_VERIFICATION.md` | Historical CodeContests experiment notes; superseded for GRPO data/reward by this guide. |
 | `data-cache/`, `model-cache/` | Local datasets, model weights, and probe artifacts; ignored by Git. |
 | `results/`, `grpo/checkpoints/` | Generated experiment artifacts; ignored by Git. |
 
@@ -106,9 +115,9 @@ docker info
 python3 --version
 ```
 
-Docker must be usable by the account running these commands. Use Python 3.10+
-on the host for the optional bundled judge. The training container provides its
-own Python 3.10 and compiled CUDA stack; do not install host Python packages into it.
+Docker must be usable by the account running these commands. The training container
+provides its own Python 3.10 and compiled CUDA stack; do not install host Python
+packages into it.
 
 Obtain the repository using its actual Git URL or the supplied source archive,
 then `cd` to its root. The caches are deliberately ignored by Git and are
@@ -134,56 +143,31 @@ The resulting image is `probed-grpo:verl0.5.0`. To record the exact built image:
 docker image inspect probed-grpo:verl0.5.0 --format '{{.Id}}'
 ```
 
-### 3. Start a code-execution judge
+### 3. Configure a profiling Monolith judge
 
-Choose one option. The service must remain available throughout GRPO training,
-including validation.
-
-#### Option A: bundled local Docker judge
-
-In a separate **host** terminal, from this repository root:
-
-```bash
-python3 grpo/judge_server.py --pull-image
-python3 grpo/judge_server.py --port 8000 --workers 8
-```
-
-Wait for `Judge ready at http://127.0.0.1:8000/execute`. Startup tests that Docker
-can actually execute Python in the pinned judge image. Leave the terminal running
-(use a persistent SSH/tmux session for long jobs).
-
-Each request runs in an ephemeral container with networking disabled, no host
-mounts or Docker socket, a read-only root filesystem, an unprivileged user,
-and CPU/memory/process/time limits. The server itself runs on the host and needs
-Docker access. It listens only on loopback. The training container uses host
-networking so it can reach it. The judge runs Python 3.11 standard-library code;
-reference solutions in CodeContests may be Python 2, but generated candidates
-are explicitly requested in Python 3. Judge containers are limited to 1 GiB and
-2 CPUs each; this is a correctness benchmark, not an official Codeforces judge.
-
-In the host terminal that will start the training container:
-
-```bash
-export MONOLITH_URL=http://127.0.0.1:8000/execute
-export JUDGE_WORKERS=8
-```
-
-#### Option B: existing Monolith-compatible service
-
-Use the service's full `/execute` URL instead:
+Venus uses Afterburner's correctness **and efficiency** reward. Use a running
+[Monolith deployment](https://github.com/Elfsong/Monolith#-deploy-your-own-monolith)
+with profiling enabled, and keep it available throughout training and validation.
+The legacy `grpo/judge_server.py` returns only stdout and cannot supply this reward;
+Venus preflight rejects it. Configure the profiling service's full URL on the host
+before entering the training container:
 
 ```bash
 export MONOLITH_URL=https://YOUR-JUDGE-HOST/execute
 export JUDGE_WORKERS=8
 ```
 
-Replace `YOUR-JUDGE-HOST`; it is a placeholder. The adapter posts Python code,
-tests, `language`, `libraries`, `timeout`, and `run_profiling` fields and requires
-stdout containing the runner's case counts. A successful health check is required
-below. Authentication headers are not implemented by this adapter.
+Replace `YOUR-JUDGE-HOST`; for a local Monolith deployment use
+`http://127.0.0.1:8000/execute`. The adapter posts Venus's supplied runner,
+problem-specific evaluator and all test cases, repeated 64 times as in Afterburner.
+It sends `run_profiling=True` and requires `status=success` with `output_dict`
+containing `stdout`, `duration`, `peak_memory`, and `integral`. Preserve Monolith's
+native measurement conventions because the dataset's baseline measurements use
+them. Authentication headers are not implemented by this adapter.
 
 The default public URL is `https://monolith.cool/execute`; its availability is not
-guaranteed. Use Option A if no maintained service is available. Do not change judge
+guaranteed (DNS resolution failed in the 2026-09-13 local check). Deploy Monolith
+or supply a maintained endpoint. Do not change judge
 implementations or limits between curriculum routes in the same experiment.
 
 ### 4. Enter the container and check the environment
@@ -205,13 +189,13 @@ source grpo/env.sh
 set -o pipefail
 mkdir -p results/logs
 python grpo/preflight.py --stage runtime
-python grpo/codeforces_reward.py --check
+python grpo/venus_reward.py --check
 ```
 
 Both must succeed. Runtime preflight imports the pinned packages, checks visible
 GPU count/architecture and executes a small CUDA operation on each requested GPU.
-Judge preflight verifies both acceptance of a correct answer and rejection of
-an incorrect one. Each training launch repeats the runtime, corpus and judge checks.
+Judge preflight verifies acceptance of a correct answer, rejection of an incorrect
+one, and availability of profiling measurements. Each launch repeats these checks.
 
 For a different GPU count, set it **before the runtime check**. For example, with
 two visible compatible GPUs:
@@ -232,10 +216,11 @@ The complete installed package list is recorded in the image. Save a copy:
 cp /opt/probed-grpo/environment.freeze.txt results/environment.freeze.txt
 ```
 
-### 5. Download and verify the probe inputs
+### 5. Download and verify both datasets
 
 ```bash
 python artifact_cache.py
+python grpo/venus_corpus.py --download-only
 python grpo/preflight.py --stage probe
 HF_HUB_OFFLINE=1 python -m unittest -v test_artifact_cache.py test_linear_probe.py
 VERL_SOURCE_DIR=/opt/verl VERL_INTEGRATION=1 \
@@ -250,8 +235,8 @@ The model and dataset revisions are pinned in `artifact_cache.py`. Downloads use
 | Dataset Arrow cache | `data-cache/huggingface/datasets/` |
 | Hub downloads and Xet cache | `data-cache/huggingface/hub/`, `data-cache/huggingface/xet/` |
 | Full linear probe and its embeddings/results | `model-cache/probe/` |
-| GRPO corpora | `grpo/data/` |
-| GRPO actor/optimizer checkpoints | `grpo/checkpoints/` |
+| Venus GRPO corpora | `grpo/data/venus/` |
+| Venus GRPO actor/optimizer checkpoints | `grpo/checkpoints/venus/` |
 
 Complete local model snapshots are reused without a Hub call. Missing default
 weights are downloaded from the pinned revision; nested optimizer/trainer snapshots
@@ -288,24 +273,31 @@ requires the full-run metadata (`max_samples=-1`, at least 80 epochs) by default
 ### 7. Build all three corpora
 
 ```bash
-python grpo/codeforces_corpus.py --device cuda:0 \
+python grpo/venus_corpus.py --device cuda:0 \
   --train-batch-size "$TRAIN_BATCH_SIZE" \
   --max-prompt-length "$MAX_PROMPT_LENGTH" \
   2>&1 | tee results/logs/corpus-full.log
 python grpo/preflight.py --stage corpus
 ```
 
-The builder uses the original CodeContests `train` and `valid` splits. It selects
-rated Codeforces problems with reference Python code and tests, filters the shared
-set to the GRPO prompt limit, and trims that common set to a whole number of training
-batches **before** applying random, official-rating and probe-score ordering. Thus
-`verl`'s `drop_last=True` cannot discard a different tail for each route. The shared
-validation set is filtered to the same prompt limit and is not batch-trimmed.
+The builder uses Venus `train` for GRPO training and `test` as the shared validation
+set, following Afterburner. Treat this as validation, not an untouched final test
+benchmark. It creates time, memory and integral optimization examples for each
+problem, with a seeded selection from its original solutions for each objective.
+Failed baselines (including empty code and infinite timeout measurements) remain
+valid repair examples, as in the source dataset.
+
+It filters examples to the prompt limit and trims the common set to whole training
+batches **before** ordering. `random` shuffles the examples, `official` uses Venus
+Easy → Medium → Hard, and `probed` uses the Codeforces-trained probe's prediction
+on `question_content` alone. Ties use problem/example IDs. A problem is scored once
+per split and reused for all objectives. All routes contain identical examples,
+baselines, tests and rewards. Validation is prompt-filtered but not batch-trimmed.
 
 It writes:
 
 ```text
-grpo/data/
+grpo/data/venus/
   random/train.parquet
   official/train.parquet
   probed/train.parquet
@@ -317,17 +309,21 @@ grpo/data/
 `manifest.json` records selection counts, excluded overlong prompts, common tail
 trimming, model path, probe hash, dataset revision, row orders and parquet hashes.
 Preflight verifies the files and that all routes contain identical records. The
-GRPO row count is smaller than the probe's 6,673 because its selection/prompt differs.
-With the pinned tokenizer, a 2,048-token prompt limit and batch size 32, the audited
-data yields **5,024 training rows and 72 validation rows**: 5,228 initial training
-rows minus 198 overlong prompts and a common 6-row tail; 76 initial validation rows
-minus 4 overlong prompts. Reference code can make some GRPO prompts much longer
-than the statement-only probe prompt, which is why this shared filtering matters.
+unfiltered Venus row counts are **2,952 training / 900 validation examples**; the
+final counts depend on token filtering and batch trimming and are printed and
+recorded in the manifest. The 2026-09-13 offline audit with seed 42, the pinned
+tokenizer, a 2,048-token prompt limit and batch size 32 retained **2,912 training /
+898 validation examples** (13 overlong train prompts, 27 common tail examples,
+2 overlong validation prompts). Every Venus statement also fits the existing
+4,096-token probe limit: the longest probe prompts were 1,780 / 1,227 tokens.
+Manifest v3 identifies Venus explicitly; old Codeforces
+corpora are rejected by preflight. The legacy Codeforces corpus/reward modules
+remain for historical checks and shared helpers, but no active launcher uses them.
 
 Scoring resumes from `probe_scores.jsonl` after interruption. If the probe, statements
 or preparation settings change, use a new corpus output directory. All routes must
 be rebuilt together after changing batch size or prompt length. To use a new corpus
-directory, pass `--output-dir` to the builder and export `CODECONTESTS_GRPO_DATA_DIR`
+directory, pass `--output-dir` to the builder and export `VENUS_GRPO_DATA_DIR`
 to the same absolute path before training.
 
 ### 8. Run one actual GRPO optimizer step
@@ -341,18 +337,18 @@ bash grpo/train.sh --config-only random
 Then run a one-step smoke job **using the full corpus and full training settings**:
 
 ```bash
-AFTERBURNER_CHECKPOINT_DIR="$PWD/grpo/checkpoints/smoke" \
+AFTERBURNER_CHECKPOINT_DIR="$PWD/grpo/checkpoints/venus/smoke" \
   bash grpo/train.sh random \
     trainer.total_training_steps=1 \
     trainer.save_freq=1 \
     trainer.test_freq=-1 \
     trainer.resume_mode=disable \
-    trainer.experiment_name=codecontests-smoke \
+    trainer.experiment_name=venus-smoke \
   2>&1 | tee results/logs/grpo-smoke.log
 ```
 
 Success requires exit status 0, a completed training step (not just model loading),
-and `grpo/checkpoints/smoke/random-seed-42/global_step_1/actor/` containing checkpoint
+and `grpo/checkpoints/venus/smoke/random-seed-42/global_step_1/actor/` containing checkpoint
 files. This checks the real GPU allocation, vLLM rollout, judge round trip, GRPO
 loss/backward step and checkpoint saving. `verl` may also perform end-of-run
 validation; allow the judge to remain running until the command exits.
@@ -379,7 +375,10 @@ bash grpo/run_three_routes.sh probed 2>&1 | tee results/logs/grpo-probed.log
 
 Use one of these alternatives, not both. Each route starts from the same cold-start
 checkpoint and saves to a separate directory (`random-seed-42`, `official-seed-42`,
-`probed-seed-42`). The default is 200 epochs, saving/validation every 10 steps.
+`probed-seed-42`) under `grpo/checkpoints/venus/`. This new default prevents
+automatic resumption of legacy Codeforces checkpoints. If overriding the path,
+use a fresh Venus checkpoint directory. The default is 200 epochs,
+saving/validation every 10 steps.
 Console logging needs no W&B account. To opt into W&B, authenticate inside the
 container and append `trainer.logger='[console,wandb]'` consistently to every route.
 
@@ -399,8 +398,8 @@ Choose an existing `global_step_N` for the route and replace `N` below:
 
 ```bash
 python -m verl.model_merger merge --backend fsdp \
-  --local_dir grpo/checkpoints/random-seed-42/global_step_N/actor \
-  --target_dir model-cache/grpo-random
+  --local_dir grpo/checkpoints/venus/random-seed-42/global_step_N/actor \
+  --target_dir model-cache/grpo-venus-random
 ```
 
 Repeat with different output directories for `official` and `probed`. This exports
@@ -412,7 +411,8 @@ locally; it does not upload weights. Retain the original shards if resuming trai
 | --- | --- |
 | CUDA unavailable / wrong GPU count | Check host `nvidia-smi`, NVIDIA Container Toolkit, Docker GPU access, `N_GPUS` and visible devices. |
 | Version/import check fails | Rebuild the pinned image and enter it; do not repair it with unpinned package upgrades. |
-| Judge connection refused | Keep the host judge terminal running; use `http://127.0.0.1:8000/execute` with this wrapper's host networking. |
+| Judge connection refused / DNS failure | Start a profiling Monolith service and set `MONOLITH_URL`; the public endpoint may be unavailable. |
+| Missing profiling measurements | The old bundled correctness judge is insufficient; use a profiling Monolith deployment. |
 | Judge busy / timeout | Keep `JUDGE_WORKERS` at or below server workers; check host CPU/RAM capacity and the judge log. Infrastructure failures abort training rather than become incorrect-answer rewards. |
 | Out of GPU memory | The defaults already use one example per actor/log-prob micro-batch. Use higher-memory/more GPUs or deliberate offloading overrides. Changing response length, rollout count or batch size changes experiment settings: use the same values for all routes and rerun the smoke test. Rebuild corpora if batch size/prompt limit changes. |
 | Missing probe / smoke probe rejected | Complete step 6 and use `model-cache/probe/probe.pt` with its full-run metrics. |
@@ -422,15 +422,19 @@ locally; it does not upload weights. Retain the original shards if resuming trai
 
 ### Verification record and limits
 
-The setup was audited on 2026-09-11. Local checks use pinned PyTorch 2.6.0,
+The original setup was audited on 2026-09-11. The Venus migration was checked on
+2026-09-13, including a real pinned dataset download and offline schema validation.
+Local checks use pinned PyTorch 2.6.0,
 Transformers 4.51.3 and datasets 4.0.0; the real `verl` 0.5.0 dataset loader,
 collation, DataProto and batch reward manager are exercised. All three launchers
 are composed against that release's real Hydra schema. Download defaults,
 cache reuse, parquet checksums, shared selection, judge protocol and cleanup
 behavior have regression tests. Full probe input tokenization was checked offline.
-The real cold-start backbone also loaded on CPU and produced a finite 2,048-value
-embedding under the pinned PyTorch/Transformers versions. The local suite passed
-11 cache/probe tests and 19 GRPO/handoff tests, including actual upstream integration.
+The earlier audit also loaded the cold-start backbone on CPU and produced a finite
+2,048-value embedding under the pinned PyTorch/Transformers versions. The local suite passed
+11 cache/probe and 40 GRPO/handoff tests, including Venus parquet collation through
+the actual upstream batch reward manager. Judge calls in that integration test
+are mocked; the live public endpoint could not resolve locally.
 
 The development machine has no Linux CUDA runtime and no running Docker daemon.
 The Docker image build, actual judge container execution and actual GRPO optimizer

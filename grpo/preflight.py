@@ -12,8 +12,8 @@ from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT))
-from artifact_cache import model_snapshot_available  # noqa: E402
-from grpo.codeforces_corpus import ROUTES, probe_fingerprint  # noqa: E402
+from artifact_cache import model_snapshot_available, VENUS_DATASET_ID, VENUS_DATASET_REVISION  # noqa: E402
+from grpo.venus_corpus import ROUTES, probe_fingerprint, _record_hash  # noqa: E402
 
 VERL_COMMIT = "8fdc4d3f202f41461f4de9f42a637228e342668b"
 RUNTIME_VERSIONS = {"torch": "2.6.0", "vllm": "0.8.5.post1", "verl": "0.5.0"}
@@ -120,9 +120,9 @@ def validate_config(config):
             "Build the shared prompt-filtered corpus first; runtime filtering/truncation changes row sets")
     require(c.algorithm.adv_estimator == "grpo" and c.reward_model.reward_manager == "batch",
             "This pipeline requires GRPO and the batch reward manager")
-    require(c.custom_reward_function.name == "codeforces_reward_fn_batch",
-            "The CodeContests batch reward function is required")
-    require(Path(c.custom_reward_function.path).resolve() == ROOT / "grpo/codeforces_reward.py",
+    require(c.custom_reward_function.name == "venus_reward_fn_batch",
+            "The Venus batch reward function is required")
+    require(Path(c.custom_reward_function.path).resolve() == ROOT / "grpo/venus_reward.py",
             "Unexpected reward implementation path")
     require(c.data.max_prompt_length > 0 and c.data.max_response_length > 0, "Token limits must be positive")
     require(c.trainer.total_epochs > 0, "TOTAL_EPOCHS must be positive")
@@ -134,8 +134,11 @@ def verify_corpora(data_dir, train_batch_size=None, max_prompt_length=None):
     manifest_path = data_dir / "manifest.json"
     require(manifest_path.is_file(), f"Missing {manifest_path}; build the corpora first")
     manifest = json.loads(manifest_path.read_text())
-    require(manifest.get("schema_version") == 2, "Rebuild corpora with the current code (manifest v2 required)")
+    require(manifest.get("schema_version") == 3, "Rebuild Venus corpora with venus_corpus.py (manifest v3 required)")
     preparation = manifest["preparation"]
+    require(preparation.get("dataset") == VENUS_DATASET_ID and
+            preparation.get("dataset_revision") == VENUS_DATASET_REVISION,
+            "GRPO requires the pinned Venus dataset; rebuild with venus_corpus.py")
     if train_batch_size is not None:
         require(preparation.get("train_batch_size") == train_batch_size,
                 "Batch size differs from corpus preparation; rebuild all routes with that batch size")
@@ -143,6 +146,8 @@ def verify_corpora(data_dir, train_batch_size=None, max_prompt_length=None):
         require(preparation.get("max_prompt_length") == max_prompt_length,
                 "Prompt limit differs from corpus preparation; rebuild all routes with that limit")
     canonical = None
+    train_problem_ids = set()
+    validation_problem_ids = set()
     for relative in [*(f"{route}/train.parquet" for route in ROUTES), "shared/validation.parquet"]:
         path = data_dir / relative
         require(path.is_file(), f"Missing corpus file: {path}")
@@ -150,24 +155,38 @@ def verify_corpora(data_dir, train_batch_size=None, max_prompt_length=None):
                 f"Corpus checksum mismatch: {path}; rebuild it")
         rows = pq.read_table(path).to_pylist()
         require(len(rows) > 0, f"Empty corpus: {path}")
-        ids = [row["extra_info"]["problem_id"] for row in rows]
-        require(len(ids) == len(set(ids)), f"Duplicate problem IDs in {path}")
+        ids = [row["extra_info"]["record_id"] for row in rows]
+        require(len(ids) == len(set(ids)), f"Duplicate Venus example IDs in {path}")
         for row in rows:
+            require(row["data_source"] == VENUS_DATASET_ID, "Every GRPO row must come from Venus")
             truth = json.loads(row["reward_model"]["ground_truth"])
-            require(len(truth["tests"]) > 0, "Every training problem must have tests")
+            info = row["extra_info"]
+            instance = json.loads(info["instance"])
+            require(len(json.loads(instance["test_cases"])) > 0, "Every Venus example must have tests")
+            require("==Code Submission==" in instance["test_case_runners"] and
+                    bool(instance["test_case_evaluator"]), "Missing Venus runner/evaluator")
+            require(all(key in truth for key in ("code", "passed", "time", "memory", "integral")),
+                    "Missing Venus baseline performance")
+            require(info["efficiency_instruction"] in ("time", "memory", "integral") and
+                    info["case_multiply"] == 64, "Unexpected Venus optimization objective or test repetition")
         if relative.startswith("shared/"):
+            validation_problem_ids = {row["extra_info"]["problem_id"] for row in rows}
             require(ids == manifest["validation_order"], "Validation order differs from manifest")
             require(len(rows) == manifest["validation_count"], "Validation count differs from manifest")
         else:
+            train_problem_ids.update(row["extra_info"]["problem_id"] for row in rows)
             route = relative.split("/")[0]
             require(ids == manifest["route_orders"][route], f"{route}: order differs from manifest")
             require(len(rows) == manifest["train_count"], "Training count differs from manifest")
             size = train_batch_size or preparation.get("train_batch_size", 1)
             require(len(rows) % size == 0, "Training corpus has an incomplete batch")
             contents = sorted(json.dumps(row, sort_keys=True) for row in rows)
+            require(sorted(_record_hash(row) for row in rows) == manifest["train_record_hashes"],
+                    "Training record hashes differ from manifest")
             if canonical is not None:
                 require(contents == canonical, "Routes contain different records")
             canonical = contents
+    require(not train_problem_ids & validation_problem_ids, "Venus train/validation problem IDs overlap")
     print(f"Corpora verified: {manifest['train_count']} train / {manifest['validation_count']} validation; identical route contents")
     return manifest
 
@@ -199,27 +218,28 @@ def check_training(config, check_judge=True):
     # Exercise the actual verl parquet/tokenizer boundary on both splits.
     from transformers import AutoTokenizer
     from verl.utils.dataset.rl_dataset import RLHFDataset, collate_fn
-    from grpo.codeforces_reward import codeforces_reward_fn_batch
+    from grpo.venus_reward import venus_reward_fn_batch
 
     tokenizer = AutoTokenizer.from_pretrained(model_path, local_files_only=True)
     for paths in (train_files, validation_files):
         dataset = RLHFDataset(paths, tokenizer, config.data)
         batch = collate_fn([dataset[0], dataset[min(1, len(dataset) - 1)]])
         # Empty responses exercise collation without making network requests.
-        scores = codeforces_reward_fn_batch(
+        scores = venus_reward_fn_batch(
             batch["data_source"], ["", ""],
             [item["ground_truth"] for item in batch["reward_model"]], batch["extra_info"],
         )
         require(len(scores) == 2, "The verl reward interface check failed")
     if check_judge:
-        from grpo.codeforces_reward import check_judge as judge
+        from grpo.venus_reward import check_judge as judge
         judge()
 
 
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--stage", choices=("runtime", "probe", "corpus", "training", "config"), default="runtime")
-    parser.add_argument("--data-dir", type=Path, default=ROOT / "grpo/data")
+    parser.add_argument("--data-dir", type=Path,
+                        default=Path(os.environ.get("VENUS_GRPO_DATA_DIR", ROOT / "grpo/data/venus")))
     parser.add_argument("--gpus", type=int, default=int(os.environ.get("N_GPUS", "8")))
     parser.add_argument("--record", type=Path, help="Save the effective config after successful preflight")
     parser.add_argument("overrides", nargs=argparse.REMAINDER)

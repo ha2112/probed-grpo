@@ -15,7 +15,9 @@ import numpy as np
 ROOT = Path(__file__).resolve().parents[2]
 sys.path.insert(0, str(ROOT))
 from grpo import codeforces_corpus as corpus, codeforces_reward as reward, preflight, judge_server
+from grpo import venus_corpus, venus_reward
 from test_codeforces_pipeline import problem
+from test_venus_pipeline import problem as venus_problem
 
 
 class HandoffTests(unittest.TestCase):
@@ -75,7 +77,7 @@ class HandoffTests(unittest.TestCase):
                 for route in corpus.ROUTES]
         self.assertTrue(all(value == sets[0] for value in sets))
 
-    def test_real_parquet_roundtrip_and_checksum_failure(self):
+    def test_legacy_codeforces_corpus_is_rejected_for_venus_training(self):
         train = [problem(str(i), i, "A", 800 + i * 100) for i in range(4)]
         validation = [problem("valid", 10, "B", 2000)]
         scores = {corpus.problem_key(split, row): row["cf_rating"]
@@ -84,12 +86,7 @@ class HandoffTests(unittest.TestCase):
             path = Path(directory)
             corpus.write_corpora(train, validation, scores, path, 42,
                                 {"train_batch_size": 4, "max_prompt_length": 2048})
-            preflight.verify_corpora(path, 4, 2048)
-            with self.assertRaisesRegex(ValueError, "Batch size differs"):
-                preflight.verify_corpora(path, 2, 2048)
-            with (path / "random/train.parquet").open("ab") as handle:
-                handle.write(b"corrupted")
-            with self.assertRaisesRegex(ValueError, "checksum mismatch"):
+            with self.assertRaisesRegex(ValueError, "Rebuild Venus"):
                 preflight.verify_corpora(path, 4, 2048)
 
 
@@ -120,12 +117,11 @@ class UpstreamConfigTests(unittest.TestCase):
         config_dir = Path(os.environ["VERL_SOURCE_DIR"]) / "verl/trainer/config"
         command = subprocess.check_output(["bash", str(ROOT / "grpo/train.sh"), "--dry-run", "random"], text=True)
         config = preflight.compose_config(shlex.split(command)[3:], config_dir)
-        rows = [problem(str(i), i, "A", 800 + i * 100) for i in range(4)]
-        scores = {corpus.problem_key(split, row): row["cf_rating"]
-                  for split in ("train", "validation") for row in rows}
+        rows = venus_corpus.make_records([venus_problem(1), venus_problem(2)], "train", 42)
+        validation = venus_corpus.make_records([venus_problem(3)], "test", 42)
         with tempfile.TemporaryDirectory() as directory:
             path = Path(directory)
-            corpus.write_corpora(rows, rows[:1], scores, path, 42)
+            venus_corpus.write_corpora(rows, validation, path, 42, {})
             data = RLHFDataset([str(path / "random/train.parquet")], tokenizer, config.data)
             batch = collate_fn([data[0], data[1]])
         response = "<thinking>x</thinking><solution>```python\nprint(1)\n```</solution>"
@@ -134,8 +130,10 @@ class UpstreamConfigTests(unittest.TestCase):
         batch["responses"] = response_ids
         batch["attention_mask"] = torch.cat([batch["attention_mask"], torch.ones_like(response_ids)], dim=1)
         protocol = DataProto.from_single_dict(batch)
-        manager = BatchRewardManager(tokenizer, 0, reward.codeforces_reward_fn_batch)
-        with patch.object(reward, "evaluate_solution", return_value=True):
+        manager = BatchRewardManager(tokenizer, 0, venus_reward.venus_reward_fn_batch)
+        with patch.object(venus_reward, "evaluate_solution", return_value={
+            "passed": True, "time": 2.0, "memory": 100.0, "integral": 150.0,
+        }):
             result = manager(protocol)
         self.assertEqual(tuple(result.shape), tuple(response_ids.shape))
         torch.testing.assert_close(result.sum(-1), torch.tensor([0.45, 0.45]))

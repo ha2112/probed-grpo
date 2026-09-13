@@ -18,6 +18,9 @@ DEFAULT_MODEL_ID = "Elfsong/Qwen2.5-Coder-3B-Instruct-Venus-Cold-Start"
 DEFAULT_MODEL_REVISION = "de85a42c256f2d9deb6eb45ce940a006734dfaa6"
 DEFAULT_DATASET_ID = "deepmind/code_contests"
 DEFAULT_DATASET_REVISION = "802411c3010cb00d1b05bad57ca77365a3c699d6"
+# The paper's Venus_Python URL now redirects to Venus_General_Test on the Hub.
+VENUS_DATASET_ID = "Elfsong/Venus_Python"
+VENUS_DATASET_REVISION = "84f037f8c257af049d4dd29ed144bb489c409a91"
 DEFAULT_MODEL_RELATIVE = Path("afterburner/Qwen2.5-Coder-3B-Instruct-Venus-Cold-Start")
 DEFAULT_MODEL_DIR = MODEL_CACHE / DEFAULT_MODEL_RELATIVE
 
@@ -119,7 +122,10 @@ def load_cached_dataset(dataset, split, cache_dir):
 
     cache_dir = Path(cache_dir).expanduser().resolve()
     cache_dir.mkdir(parents=True, exist_ok=True)
-    revision = DEFAULT_DATASET_REVISION if dataset == DEFAULT_DATASET_ID else None
+    revision = {
+        DEFAULT_DATASET_ID: DEFAULT_DATASET_REVISION,
+        VENUS_DATASET_ID: VENUS_DATASET_REVISION,
+    }.get(dataset)
     return load_dataset(dataset, split=split, cache_dir=str(cache_dir), revision=revision)
 
 
