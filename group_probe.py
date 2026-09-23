@@ -113,9 +113,10 @@ def selection_score(report):
     return float(report["qwk"]) + 0.15 * float(report["adjacent_accuracy"])
 
 
-def classification_report(y_true, y_pred, y_score=None):
+def classification_report(y_true, y_pred, y_score=None, num_groups=None):
     y_true = np.asarray(y_true, dtype=np.int64)
     y_pred = np.asarray(y_pred, dtype=np.int64)
+    labels = list(range(NUM_GROUPS if num_groups is None else int(num_groups)))
     report = {
         "n": int(len(y_true)),
         "accuracy": float(accuracy_score(y_true, y_pred)),
@@ -126,7 +127,7 @@ def classification_report(y_true, y_pred, y_score=None):
         if len(np.unique(y_true)) > 1 and len(np.unique(y_pred)) > 1
         else None,
         "confusion_matrix": confusion_matrix(
-            y_true, y_pred, labels=list(range(NUM_GROUPS))
+            y_true, y_pred, labels=labels
         ).tolist(),
     }
     if y_score is not None:

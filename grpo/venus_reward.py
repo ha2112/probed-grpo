@@ -76,6 +76,10 @@ for i, case in enumerate(TESTS * {case_multiply}, start=1):
 
 if __name__ == "__main__":
     result = unittest.main(verbosity=2, exit=False)
+    n_total = int(result.result.testsRun)
+    n_fail = len(result.result.failures) + len(result.result.errors)
+    n_pass = max(0, n_total - n_fail)
+    print(f"VENUS_SCORE:{{n_pass}}/{{n_total}}")
     print("Success" if result.result.wasSuccessful() else "Failed")
 '''
 

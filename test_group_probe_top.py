@@ -5,6 +5,7 @@ import unittest
 import numpy as np
 import torch
 
+import group_probe as gp
 import group_probe_top as top
 
 
@@ -85,6 +86,16 @@ class TopGroupProbeTests(unittest.TestCase):
         for group in range(5):
             self.assertGreater(np.sum(groups[calibration] == group), 0)
             self.assertGreater(np.sum(groups[selection] == group), 0)
+
+    def test_three_group_edges(self):
+        ratings = np.concatenate(
+            [np.full(100, 800.0), np.full(100, 1600.0), np.full(100, 2800.0)]
+        )
+        idx = np.arange(len(ratings))
+        edges = gp.fit_quintile_edges(ratings, idx, 3)
+        self.assertEqual(len(edges), 2)
+        groups = gp.ratings_to_groups(ratings, edges)
+        self.assertEqual(sorted(np.unique(groups).tolist()), [0, 1, 2])
 
 
 if __name__ == "__main__":

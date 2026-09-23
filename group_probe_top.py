@@ -35,9 +35,15 @@ import group_probe as gp
 import linear_probe as lp
 
 
-NUM_GROUPS = 5
+NUM_GROUPS = 5  # default; override with --num-groups (e.g. 3 = easy/medium/hard)
 SEED = 42
 DEFAULT_OUTPUT_DIR = lp.ROOT / "model-cache/group-probe-top"
+
+
+GROUP_NAME = {
+    3: {0: "easy", 1: "medium", 2: "hard"},
+    5: {0: "g0", 1: "g1", 2: "g2", 3: "g3", 4: "g4"},
+}
 
 
 def set_seed(seed: int) -> None:
@@ -66,12 +72,14 @@ def unwrap(model):
 
 
 class ProblemDataset(Dataset):
-    def __init__(self, records, ratings, groups, indices, rating_mean, rating_std):
+    def __init__(
+        self, records, ratings, groups, indices, rating_mean, rating_std, num_groups
+    ):
         self.records = [records[int(i)] for i in indices]
         self.ratings = np.asarray(ratings, dtype=np.float32)[indices]
         self.groups = np.asarray(groups, dtype=np.int64)[indices]
         self.rating_z = (self.ratings - rating_mean) / rating_std
-        self.coral = gp.coral_targets(self.groups, NUM_GROUPS)
+        self.coral = gp.coral_targets(self.groups, num_groups)
 
     def __len__(self):
         return len(self.records)
@@ -139,9 +147,10 @@ def lora_targets(num_layers, last_n_layers):
 class TopGroupModel(nn.Module):
     """Whole-sequence attentive pooling with four complementary objectives."""
 
-    def __init__(self, backbone, hidden_size, dropout=0.15):
+    def __init__(self, backbone, hidden_size, dropout=0.15, num_groups=NUM_GROUPS):
         super().__init__()
         self.backbone = backbone
+        self.num_groups = int(num_groups)
         backbone_dtype = next(backbone.parameters()).dtype
         self.attention_pool = nn.Sequential(
             nn.LayerNorm(hidden_size),
@@ -159,8 +168,8 @@ class TopGroupModel(nn.Module):
             nn.Dropout(dropout),
         )
         width = hidden_size // 2
-        self.classifier = nn.Linear(width, NUM_GROUPS)
-        self.ordinal = MonotonicOrdinalHead(width, NUM_GROUPS)
+        self.classifier = nn.Linear(width, self.num_groups)
+        self.ordinal = MonotonicOrdinalHead(width, self.num_groups)
         self.regressor = nn.Linear(width, 1)
 
     def forward(self, input_ids, attention_mask):
@@ -231,15 +240,18 @@ def build_model(args, device, dtype):
     backbone.gradient_checkpointing_enable(
         gradient_checkpointing_kwargs={"use_reentrant": False}
     )
-    model = TopGroupModel(backbone, backbone.config.hidden_size, args.dropout)
+    model = TopGroupModel(
+        backbone, backbone.config.hidden_size, args.dropout, args.num_groups
+    )
     return tokenizer, model.to(device), layers
 
 
 def earth_mover_loss(logits, groups):
     """Squared distance between predicted and target cumulative distributions."""
+    num_groups = logits.shape[-1]
     probabilities = torch.softmax(logits.float(), dim=-1)
     predicted_cdf = probabilities.cumsum(dim=-1)
-    target = F.one_hot(groups, NUM_GROUPS).float()
+    target = F.one_hot(groups, num_groups).float()
     target_cdf = target.cumsum(dim=-1)
     return torch.mean((predicted_cdf - target_cdf) ** 2)
 
@@ -273,9 +285,10 @@ def multi_task_loss(outputs, groups, coral_targets, rating_z, args):
         outputs["coral_logits"].float(), coral_targets
     )
     regression = F.smooth_l1_loss(outputs["rating_z"].float(), rating_z, beta=0.5)
+    num_groups = outputs["class_logits"].shape[-1]
     class_score = (
         torch.softmax(outputs["class_logits"].float(), dim=-1)
-        * torch.arange(NUM_GROUPS, device=groups.device).float()
+        * torch.arange(num_groups, device=groups.device).float()
     ).sum(dim=-1)
     ranking = pairwise_rank_loss(class_score, rating_z, args.pair_min_gap)
     total = (
@@ -355,10 +368,10 @@ def calibration_selection(report):
     )
 
 
-def split_calibration_selection(validation_indices, validation_groups):
+def split_calibration_selection(validation_indices, validation_groups, num_groups=NUM_GROUPS):
     """Split validation labels for calibration and unbiased epoch selection."""
     local = np.arange(len(validation_indices))
-    counts = np.bincount(validation_groups, minlength=NUM_GROUPS)
+    counts = np.bincount(validation_groups, minlength=num_groups)
     stratify = validation_groups if np.all(counts[counts > 0] >= 2) else None
     calibration_local, selection_local = train_test_split(
         local,
@@ -372,7 +385,7 @@ def split_calibration_selection(validation_indices, validation_groups):
     )
 
 
-def calibrate_decoder(class_scores, coral_scores, rating_scores, labels):
+def calibrate_decoder(class_scores, coral_scores, rating_scores, labels, num_groups=NUM_GROUPS):
     """Select a validation-only score blend and exact-optimal thresholds."""
     components = np.stack([class_scores, coral_scores, rating_scores], axis=1)
     components = (components - components.mean(axis=0)) / np.maximum(
@@ -384,9 +397,11 @@ def calibrate_decoder(class_scores, coral_scores, rating_scores, labels):
             rating_weight = 1 - class_weight - coral_weight
             weights = np.asarray([class_weight, coral_weight, rating_weight])
             score = components @ weights
-            thresholds = fit_exact_ordered_thresholds(score, labels)
+            thresholds = fit_exact_ordered_thresholds(score, labels, num_groups)
             prediction = groups_from_thresholds(score, thresholds)
-            report = gp.classification_report(labels, prediction, score)
+            report = gp.classification_report(
+                labels, prediction, score, num_groups=num_groups
+            )
             candidates.append(
                 (calibration_selection(report), weights, thresholds, components.mean(0), components.std(0), report)
             )
@@ -423,7 +438,8 @@ def predict_loader(model, tokenizer, loader, device, max_length):
         "coral_scores": [],
         "rating_scores": [],
     }
-    rank_values = torch.arange(NUM_GROUPS, device=device).float()
+    num_groups = unwrap(model).num_groups
+    rank_values = torch.arange(num_groups, device=device).float()
     for batch in loader:
         ids, mask = tokenize_batch(
             tokenizer, [row["description"] for row in batch], device, max_length
@@ -533,6 +549,7 @@ def save_checkpoint(args, model, edges, rating_mean, rating_std, layers, directo
             "lora_alpha": int(args.lora_alpha),
             "last_n_layers": int(args.last_n_layers),
             "max_length": int(args.max_length),
+            "num_groups": int(args.num_groups),
             "calibration": calibration,
         },
         directory / "heads.pt",
@@ -557,7 +574,10 @@ def load_checkpoint(args, directory, device):
         local_files_only=True,
     )
     backbone = PeftModel.from_pretrained(backbone, directory / "adapter")
-    model = TopGroupModel(backbone, backbone.config.hidden_size, bundle["dropout"])
+    num_groups = int(bundle.get("num_groups", NUM_GROUPS))
+    model = TopGroupModel(
+        backbone, backbone.config.hidden_size, bundle["dropout"], num_groups
+    )
     if int(backbone.config.hidden_size) != bundle["hidden_size"]:
         raise ValueError("Checkpoint and base-model hidden sizes differ")
     if int(backbone.config.num_hidden_layers) != bundle["num_hidden_layers"]:
@@ -587,14 +607,20 @@ def train(args):
     ratings = np.asarray([row["rating"] for row in records], dtype=np.float32)
     # Keep the benchmark partition fixed; --seed changes optimization only.
     train_idx, val_idx, test_idx = gp.split_indices(len(records), SEED)
-    edges = gp.fit_quintile_edges(ratings, train_idx, NUM_GROUPS)
+    edges = gp.fit_quintile_edges(ratings, train_idx, args.num_groups)
     groups = gp.ratings_to_groups(ratings, edges)
     rating_mean = float(ratings[train_idx].mean())
     rating_std = float(ratings[train_idx].std())
     if rank == 0:
         args.output_dir.mkdir(parents=True, exist_ok=True)
         print(f"Using {world_size} GPU(s), per-GPU batch={args.batch_size}", flush=True)
+        print(f"num_groups={args.num_groups} names={GROUP_NAME.get(args.num_groups)}", flush=True)
         print("Train-only edges:", edges.tolist(), flush=True)
+        print(
+            "Train group counts:",
+            np.bincount(groups[train_idx], minlength=args.num_groups).tolist(),
+            flush=True,
+        )
 
     tokenizer, raw_model, layers = build_model(args, device, dtype)
     # Fail deterministically before DDP collectives if any prompt is too long.
@@ -617,21 +643,28 @@ def train(args):
         else raw_model
     )
 
+    def make_split(indices):
+        return ProblemDataset(
+            records,
+            ratings,
+            groups,
+            indices,
+            rating_mean,
+            rating_std,
+            args.num_groups,
+        )
+
     datasets = {
-        "train": ProblemDataset(records, ratings, groups, train_idx, rating_mean, rating_std),
-        "validation": ProblemDataset(records, ratings, groups, val_idx, rating_mean, rating_std),
-        "test": ProblemDataset(records, ratings, groups, test_idx, rating_mean, rating_std),
-        "all": ProblemDataset(records, ratings, groups, np.arange(len(records)), rating_mean, rating_std),
+        "train": make_split(train_idx),
+        "validation": make_split(val_idx),
+        "test": make_split(test_idx),
+        "all": make_split(np.arange(len(records))),
     }
     calibration_idx, selection_idx = split_calibration_selection(
-        val_idx, groups[val_idx]
+        val_idx, groups[val_idx], args.num_groups
     )
-    datasets["calibration"] = ProblemDataset(
-        records, ratings, groups, calibration_idx, rating_mean, rating_std
-    )
-    datasets["selection"] = ProblemDataset(
-        records, ratings, groups, selection_idx, rating_mean, rating_std
-    )
+    datasets["calibration"] = make_split(calibration_idx)
+    datasets["selection"] = make_split(selection_idx)
     sampler = (
         DistributedSampler(datasets["train"], shuffle=True, seed=args.seed)
         if distributed
@@ -648,18 +681,30 @@ def train(args):
     parameters = [parameter for parameter in model.parameters() if parameter.requires_grad]
     optimizer = torch.optim.AdamW(parameters, lr=args.lr, weight_decay=args.weight_decay)
     updates_per_epoch = math.ceil(len(train_loader) / args.grad_accum)
-    total_updates = max(1, updates_per_epoch * args.epochs)
+    if args.max_steps > 0:
+        total_updates = args.max_steps
+        planned_epochs = math.ceil(args.max_steps / max(1, updates_per_epoch))
+    else:
+        total_updates = max(1, updates_per_epoch * args.epochs)
+        planned_epochs = args.epochs
     warmup = max(1, int(total_updates * args.warmup_ratio))
     global_step = 0
-    best = {"score": -math.inf, "epoch": 0}
+    best = {"score": -math.inf, "epoch": 0, "step": 0}
     patience_left = args.patience
     history = []
     plot_dir = Path(args.plot_dir)
+    reached_max_steps = False
     if rank == 0:
         plot_dir.mkdir(parents=True, exist_ok=True)
         (args.output_dir / "checkpoints").mkdir(parents=True, exist_ok=True)
+        if args.max_steps > 0:
+            print(
+                f"Step budget: max_steps={args.max_steps}, "
+                f"~{updates_per_epoch} updates/epoch, planned_epochs≈{planned_epochs}",
+                flush=True,
+            )
 
-    for epoch in range(1, args.epochs + 1):
+    for epoch in range(1, planned_epochs + 1):
         if sampler is not None:
             sampler.set_epoch(epoch)
         model.train()
@@ -710,9 +755,41 @@ def train(args):
                 optimizer.step()
                 optimizer.zero_grad(set_to_none=True)
                 global_step += 1
+                if args.max_steps > 0 and global_step >= args.max_steps:
+                    reached_max_steps = True
+                if (
+                    rank == 0
+                    and args.save_every_steps > 0
+                    and global_step % args.save_every_steps == 0
+                ):
+                    periodic = (
+                        args.output_dir / "checkpoints" / f"step-{global_step:06d}"
+                    )
+                    save_checkpoint(
+                        args,
+                        unwrap(model),
+                        edges,
+                        rating_mean,
+                        rating_std,
+                        layers,
+                        periodic,
+                        None,
+                    )
+                    print(f"Saved periodic checkpoint: {periodic}", flush=True)
             if rank == 0 and (step % args.log_every == 0 or step == len(train_loader)):
                 summary = " ".join(f"{key}={value / seen:.4f}" for key, value in totals.items())
-                print(f"epoch={epoch}/{args.epochs} step={step}/{len(train_loader)} {summary}", flush=True)
+                budget = (
+                    f"opt={global_step}/{args.max_steps}"
+                    if args.max_steps > 0
+                    else f"opt={global_step}"
+                )
+                print(
+                    f"epoch={epoch}/{planned_epochs} step={step}/{len(train_loader)} "
+                    f"{budget} {summary}",
+                    flush=True,
+                )
+            if reached_max_steps:
+                break
 
         if distributed:
             dist.barrier()
@@ -726,6 +803,7 @@ def train(args):
                 calibration_raw["coral_scores"],
                 calibration_raw["rating_scores"],
                 calibration_raw["labels"],
+                args.num_groups,
             )
             selection_raw = predict_loader(
                 unwrap(model), tokenizer, selection_loader, device, args.max_length
@@ -737,17 +815,21 @@ def train(args):
                 calibration,
             )
             report = gp.classification_report(
-                selection_raw["labels"], prediction, score
+                selection_raw["labels"],
+                prediction,
+                score,
+                num_groups=args.num_groups,
             )
             selection = calibration_selection(report)
             row = {
                 "epoch": epoch,
-                "train_loss": totals["loss"] / seen,
-                "train_ce": totals["ce"] / seen,
-                "train_emd": totals["emd"] / seen,
-                "train_coral": totals["coral"] / seen,
-                "train_regression": totals["regression"] / seen,
-                "train_ranking": totals["ranking"] / seen,
+                "opt_step": global_step,
+                "train_loss": totals["loss"] / max(seen, 1),
+                "train_ce": totals["ce"] / max(seen, 1),
+                "train_emd": totals["emd"] / max(seen, 1),
+                "train_coral": totals["coral"] / max(seen, 1),
+                "train_regression": totals["regression"] / max(seen, 1),
+                "train_ranking": totals["ranking"] / max(seen, 1),
                 "val_accuracy": report["accuracy"],
                 "val_qwk": report["qwk"],
                 "val_adjacent_accuracy": report["adjacent_accuracy"],
@@ -758,7 +840,7 @@ def train(args):
             print(json.dumps({"validation": row}, indent=2), flush=True)
             print(f"Updated live plots: {plot_dir / 'metrics_live.png'}", flush=True)
             if selection > best["score"] + 1e-6:
-                best = {"score": selection, "epoch": epoch}
+                best = {"score": selection, "epoch": epoch, "step": global_step}
                 if args.patience > 0:
                     patience_left = args.patience
                 save_checkpoint(
@@ -790,6 +872,9 @@ def train(args):
                     calibration,
                 )
                 print(f"Saved periodic checkpoint: {periodic}", flush=True)
+            if reached_max_steps:
+                print(f"Reached max_steps={args.max_steps}; stopping.", flush=True)
+                stop = True
         if distributed:
             flag = torch.tensor([int(stop)], device=device)
             dist.broadcast(flag, 0)
@@ -819,12 +904,16 @@ def train(args):
                 raw["rating_scores"],
                 bundle["calibration"],
             )
-            reports[split] = gp.classification_report(raw["labels"], predicted, score)
+            reports[split] = gp.classification_report(
+                raw["labels"], predicted, score, num_groups=args.num_groups
+            )
             split_predictions[split] = (raw, predicted, score)
 
         metrics = {
             "method": "attention_lora_multitask_calibrated",
             "seed": args.seed,
+            "num_groups": args.num_groups,
+            "group_names": GROUP_NAME.get(args.num_groups),
             "best_epoch": best["epoch"],
             "edges": edges.tolist(),
             "rating_mean_train": rating_mean,
@@ -911,8 +1000,9 @@ def predict_file(args):
     with torch.no_grad():
         output = model(ids, mask)
         probability = torch.softmax(output["class_logits"].float(), dim=-1)[0]
+        num_groups = int(bundle.get("num_groups", model.num_groups))
         class_score = float(
-            (probability * torch.arange(NUM_GROUPS, device=device).float()).sum()
+            (probability * torch.arange(num_groups, device=device).float()).sum()
         )
         coral_score = float(torch.sigmoid(output["coral_logits"].float()).sum())
         rating_score = float(output["rating_z"].float()[0])
@@ -950,6 +1040,12 @@ def parse_args(argv=None):
     parser.add_argument("--dtype", choices=("bfloat16", "float16"), default="bfloat16")
     parser.add_argument("--epochs", type=int, default=10)
     parser.add_argument(
+        "--num-groups",
+        type=int,
+        default=NUM_GROUPS,
+        help="Ordered difficulty buckets (3 = easy/medium/hard, 5 = quintiles)",
+    )
+    parser.add_argument(
         "--patience",
         type=int,
         default=3,
@@ -981,6 +1077,18 @@ def parse_args(argv=None):
         help="Save a periodic checkpoint every N epochs (0 disables)",
     )
     parser.add_argument(
+        "--max-steps",
+        type=int,
+        default=0,
+        help="Stop after N optimizer steps (0 = use --epochs only)",
+    )
+    parser.add_argument(
+        "--save-every-steps",
+        type=int,
+        default=0,
+        help="Save a periodic checkpoint every N optimizer steps (0 disables)",
+    )
+    parser.add_argument(
         "--plot-dir",
         type=Path,
         default=lp.ROOT / "results/group-probe-top",
@@ -990,10 +1098,12 @@ def parse_args(argv=None):
     args = parser.parse_args(argv)
     if min(args.epochs, args.batch_size, args.grad_accum) < 1:
         parser.error("epochs/batch-size/grad-accum must be positive")
+    if args.num_groups < 2:
+        parser.error("num-groups must be >= 2")
     if args.patience < 0:
         parser.error("patience must be >= 0 (0 disables early stopping)")
-    if args.save_every < 0:
-        parser.error("save-every must be >= 0")
+    if min(args.save_every, args.max_steps, args.save_every_steps) < 0:
+        parser.error("save-every/max-steps/save-every-steps must be >= 0")
     return args
 
 
