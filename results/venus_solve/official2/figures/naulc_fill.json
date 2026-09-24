@@ -1,0 +1,49 @@
+{
+  "method": "Linear interpolation in global-step vs held-out mean_reward/pass_rate between nearest measured neighbors. medium_400/600 between medium_200 and medium_800; hard_600/800 between hard_400 and hard_final (measured). hard_final (step 3000) uses curriculum official/eval.",
+  "estimated": {
+    "medium_step400": {
+      "global_step": 1400,
+      "mean_reward": 0.48804444444444456,
+      "pass_rate": 0.30333333333333334
+    },
+    "medium_step600": {
+      "global_step": 1600,
+      "mean_reward": 0.49053888888888897,
+      "pass_rate": 0.30666666666666664
+    },
+    "hard_step600": {
+      "global_step": 2600,
+      "mean_reward": 0.4776138888888889,
+      "pass_rate": 0.2977777777777778
+    },
+    "hard_step800": {
+      "global_step": 2800,
+      "mean_reward": 0.4331444444444445,
+      "pass_rate": 0.24222222222222223
+    },
+    "hard_step1000": {
+      "global_step": 3000,
+      "mean_reward": 0.38867500000000005,
+      "pass_rate": 0.18666666666666668,
+      "source": "measured_hard_final"
+    }
+  },
+  "nAULC": {
+    "random": 0.45693666666666666,
+    "official": 0.4805267361111112,
+    "probed": 0.4763549242424243,
+    "official_obs_only": 0.4805267361111112,
+    "probed_obs_only": 0.4763549242424243
+  },
+  "deltas": {
+    "probed_minus_random": 0.019418257575757658,
+    "official_minus_random": 0.023590069444444528,
+    "probed_minus_official": -0.00417181186868687
+  },
+  "time_to_random_final_reward": {
+    "threshold_reward": 0.4753916666666667,
+    "random": 1000,
+    "official": 1041,
+    "probed": 1041
+  }
+}

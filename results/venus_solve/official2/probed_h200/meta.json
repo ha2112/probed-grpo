@@ -1,0 +1,70 @@
+{
+  "route": "Probed",
+  "definition": "Probed report checkpoint = official Easy\u2192Medium\u2192Hard curriculum truncated after hard/step-000200 (alias H200). Same training run as Official; Official continues to hard/step-000400.",
+  "adapter": "/home/cuongvd6/sc/probed-grpo/results/venus_solve/official2/curriculum/official/hard/step-000200",
+  "stages": {
+    "easy": {
+      "steps": 1000,
+      "history": "results/venus_solve/official2/curriculum/official/easy/history.csv"
+    },
+    "medium": {
+      "steps": 1000,
+      "history": "results/venus_solve/official2/curriculum/official/medium/history.csv"
+    },
+    "hard": {
+      "steps_included": 200,
+      "history_source": "results/venus_solve/official2/curriculum/official/hard/history.csv"
+    }
+  },
+  "n_train_rows": 2200,
+  "global_step_range": [
+    1,
+    2200
+  ],
+  "display_step_range": [
+    0.3333333333333333,
+    733.3333333333333
+  ],
+  "final_train_batch": {
+    "reward_mean": 0.2249999940395355,
+    "pass_rate": 0.0,
+    "global_step": 2200
+  },
+  "held_out_eval": {
+    "n": 300,
+    "pass_rate": 0.3566666666666667,
+    "mean_reward": 0.5307499999999999,
+    "syntax_ok_rate": 1.0,
+    "mean_test_fraction": 0.5511333333333333,
+    "mean_test_fraction_if_syntax_ok": 0.5511333333333333,
+    "mean_test_fraction_if_syntax_ok_and_not_all_pass": 0.302279792746114,
+    "n_syntax_ok": 300,
+    "n_not_all_pass": 193,
+    "adapter": "/home/cuongvd6/sc/probed-grpo/results/venus_solve/official2/curriculum/official/hard/step-000200",
+    "eval_file": "/home/cuongvd6/sc/probed-grpo/grpo/data/venus_solve/shared/test.parquet",
+    "world_size": 1,
+    "by_official_difficulty": {
+      "Easy": {
+        "n": 71,
+        "pass_rate": 0.7183098591549296,
+        "mean_reward": 0.7987323943661971,
+        "syntax_ok_rate": 1.0,
+        "mean_test_fraction": 0.8191549295774647
+      },
+      "Hard": {
+        "n": 67,
+        "pass_rate": 0.07462686567164178,
+        "mean_reward": 0.3108208955223881,
+        "syntax_ok_rate": 1.0,
+        "mean_test_fraction": 0.30298507462686564
+      },
+      "Medium": {
+        "n": 162,
+        "pass_rate": 0.3148148148148148,
+        "mean_reward": 0.5042592592592593,
+        "syntax_ok_rate": 1.0,
+        "mean_test_fraction": 0.5362962962962963
+      }
+    }
+  }
+}

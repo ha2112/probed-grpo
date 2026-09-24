@@ -1,0 +1,19 @@
+{
+  "linear_probe_test": {
+    "n": 1335,
+    "rmse": 509.92730712890625,
+    "mae": 408.03076171875,
+    "pearson": 0.6744778733797089,
+    "spearman": 0.6841100818757281
+  },
+  "mean_predictor_test": {
+    "rmse": 690.0264769603427,
+    "mae": 574.2128428457403
+  },
+  "venus_probe_label_spearman": 0.6844899634357522,
+  "batch_distinct_ids_per_step": {
+    "random": 2,
+    "official": 2,
+    "probed": 2
+  }
+}

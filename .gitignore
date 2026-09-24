@@ -45,6 +45,44 @@ wandb/
 lightning_logs/
 *.log
 
-# Experiment artifacts; retain the directory placeholder
+# Experiment artifacts; retain the directory placeholder.
+# Track a small reviewable subset (train histories, summaries, paper figures).
 results/*
 !results/.gitkeep
+!results/venus_solve/
+results/venus_solve/*
+!results/venus_solve/official2/
+results/venus_solve/official2/*
+
+!results/venus_solve/official2/baseline/
+results/venus_solve/official2/baseline/*
+!results/venus_solve/official2/baseline/summary.json
+!results/venus_solve/official2/baseline/full/
+results/venus_solve/official2/baseline/full/*
+!results/venus_solve/official2/baseline/full/history.csv
+
+!results/venus_solve/official2/curriculum/
+results/venus_solve/official2/curriculum/*
+!results/venus_solve/official2/curriculum/summary.json
+!results/venus_solve/official2/curriculum/official/
+results/venus_solve/official2/curriculum/official/*
+!results/venus_solve/official2/curriculum/official/easy/
+!results/venus_solve/official2/curriculum/official/medium/
+!results/venus_solve/official2/curriculum/official/hard/
+results/venus_solve/official2/curriculum/official/easy/*
+results/venus_solve/official2/curriculum/official/medium/*
+results/venus_solve/official2/curriculum/official/hard/*
+!results/venus_solve/official2/curriculum/official/easy/history.csv
+!results/venus_solve/official2/curriculum/official/medium/history.csv
+!results/venus_solve/official2/curriculum/official/hard/history.csv
+
+!results/venus_solve/official2/figures/
+results/venus_solve/official2/figures/*
+!results/venus_solve/official2/figures/*.pdf
+!results/venus_solve/official2/figures/*.png
+!results/venus_solve/official2/figures/*.json
+
+!results/venus_solve/official2/probed_h200/
+results/venus_solve/official2/probed_h200/*
+!results/venus_solve/official2/probed_h200/history.csv
+!results/venus_solve/official2/probed_h200/meta.json

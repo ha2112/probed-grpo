@@ -1,0 +1,41 @@
+{
+  "arm": "official_curriculum",
+  "test_n": 300,
+  "steps_per_stage": 1000,
+  "gpus": 2,
+  "curriculum_label": "official Easy/Medium/Hard, not probe",
+  "official_curriculum_pass_rate": 0.18666666666666668,
+  "official_curriculum": {
+    "n": 300,
+    "pass_rate": 0.18666666666666668,
+    "syntax_ok_rate": 0.99,
+    "mean_test_fraction": 0.37443333333333334,
+    "mean_test_fraction_if_syntax_ok": 0.37821548821548817,
+    "mean_test_fraction_if_syntax_ok_and_not_all_pass": 0.2337344398340249,
+    "n_syntax_ok": 297,
+    "n_not_all_pass": 244,
+    "adapter": "/home/cuongvd6/sc/probed-grpo/results/venus_solve/official2/curriculum/official/hard/final",
+    "eval_file": "/home/cuongvd6/sc/probed-grpo/grpo/data/venus_solve/shared/test.parquet",
+    "world_size": 2,
+    "by_official_difficulty": {
+      "Easy": {
+        "n": 71,
+        "pass_rate": 0.4084507042253521,
+        "syntax_ok_rate": 0.9859154929577465,
+        "mean_test_fraction": 0.5336619718309858
+      },
+      "Hard": {
+        "n": 67,
+        "pass_rate": 0.05970149253731343,
+        "syntax_ok_rate": 1.0,
+        "mean_test_fraction": 0.23671641791044776
+      },
+      "Medium": {
+        "n": 162,
+        "pass_rate": 0.1419753086419753,
+        "syntax_ok_rate": 0.9876543209876543,
+        "mean_test_fraction": 0.36160493827160495
+      }
+    }
+  }
+}

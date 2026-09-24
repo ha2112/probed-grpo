@@ -1,0 +1,74 @@
+{
+  "arm": "baseline_full",
+  "test_n": 300,
+  "steps": 1000,
+  "gpus": 2,
+  "base_model_pass_rate": 0.2633333333333333,
+  "full_grpo_pass_rate": 0.2866666666666667,
+  "base_model": {
+    "n": 300,
+    "pass_rate": 0.2633333333333333,
+    "syntax_ok_rate": 1.0,
+    "mean_test_fraction": 0.4376333333333334,
+    "mean_test_fraction_if_syntax_ok": 0.4376333333333334,
+    "mean_test_fraction_if_syntax_ok_and_not_all_pass": 0.23660633484162896,
+    "n_syntax_ok": 300,
+    "n_not_all_pass": 221,
+    "adapter": "base",
+    "eval_file": "/home/cuongvd6/sc/probed-grpo/grpo/data/venus_solve/shared/test.parquet",
+    "world_size": 2,
+    "by_official_difficulty": {
+      "Easy": {
+        "n": 71,
+        "pass_rate": 0.5915492957746479,
+        "syntax_ok_rate": 1.0,
+        "mean_test_fraction": 0.698450704225352
+      },
+      "Hard": {
+        "n": 67,
+        "pass_rate": 0.014925373134328358,
+        "syntax_ok_rate": 1.0,
+        "mean_test_fraction": 0.1964179104477612
+      },
+      "Medium": {
+        "n": 162,
+        "pass_rate": 0.2222222222222222,
+        "syntax_ok_rate": 1.0,
+        "mean_test_fraction": 0.42308641975308636
+      }
+    }
+  },
+  "full_grpo": {
+    "n": 300,
+    "pass_rate": 0.2866666666666667,
+    "syntax_ok_rate": 1.0,
+    "mean_test_fraction": 0.47623333333333334,
+    "mean_test_fraction_if_syntax_ok": 0.47623333333333334,
+    "mean_test_fraction_if_syntax_ok_and_not_all_pass": 0.2657476635514019,
+    "n_syntax_ok": 300,
+    "n_not_all_pass": 214,
+    "adapter": "/home/cuongvd6/sc/probed-grpo/results/venus_solve/official2/baseline/full/final",
+    "eval_file": "/home/cuongvd6/sc/probed-grpo/grpo/data/venus_solve/shared/test.parquet",
+    "world_size": 2,
+    "by_official_difficulty": {
+      "Easy": {
+        "n": 71,
+        "pass_rate": 0.6901408450704225,
+        "syntax_ok_rate": 1.0,
+        "mean_test_fraction": 0.7511267605633803
+      },
+      "Hard": {
+        "n": 67,
+        "pass_rate": 0.05970149253731343,
+        "syntax_ok_rate": 1.0,
+        "mean_test_fraction": 0.2531343283582089
+      },
+      "Medium": {
+        "n": 162,
+        "pass_rate": 0.2037037037037037,
+        "syntax_ok_rate": 1.0,
+        "mean_test_fraction": 0.4480246913580246
+      }
+    }
+  }
+}
